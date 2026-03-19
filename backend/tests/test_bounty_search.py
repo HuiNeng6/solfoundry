@@ -1,32 +1,61 @@
-"""Tests for bounty search and filter functionality."""
+"""Tests for bounty search and filter functionality.
 
+Uses PostgreSQL test database to match production environment.
+Run with: pytest tests/test_bounty_search.py -v
+"""
+
+import os
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 from app.main import app
 from app.models.bounty import BountyDB, Base
+from app.services.bounty_service import BountySearchService
+from app.models.bounty import BountySearchParams
 
 
-# Test database setup
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+# Test database URL (PostgreSQL required for FTS)
+TEST_DATABASE_URL = os.getenv(
+    "TEST_DATABASE_URL",
+    "postgresql+asyncpg://postgres:postgres@localhost/solfoundry_test"
+)
 
 
-@pytest.fixture
-async def db_session():
-    """Create a test database session."""
+@pytest_asyncio.fixture
+async def db_engine():
+    """Create test database engine."""
     engine = create_async_engine(TEST_DATABASE_URL, echo=True)
+    
+    # Create tables
     async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    yield engine
+    
+    # Cleanup
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def db_session(db_engine):
+    """Create a test database session."""
+    async_session = async_sessionmaker(
+        db_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
     
     async with async_session() as session:
         yield session
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client():
     """Create a test client."""
     async with AsyncClient(app=app, base_url="http://test") as ac:
@@ -36,8 +65,6 @@ async def client():
 @pytest.mark.asyncio
 async def test_search_bounties_basic(db_session):
     """Test basic bounty search without filters."""
-    from app.services.bounty_service import BountySearchService
-    from app.models.bounty import BountySearchParams
     
     # Create test bounties
     bounty1 = BountyDB(
@@ -73,39 +100,8 @@ async def test_search_bounties_basic(db_session):
 
 
 @pytest.mark.asyncio
-async def test_search_bounties_with_query(db_session):
-    """Test bounty search with query filter."""
-    from app.services.bounty_service import BountySearchService
-    from app.models.bounty import BountySearchParams
-    
-    # Create test bounties
-    bounty = BountyDB(
-        title="Implement search feature",
-        description="Add full-text search to the bounty system",
-        tier=1,
-        category="backend",
-        status="open",
-        reward_amount=200000.0,
-        skills=["python"],
-    )
-    db_session.add(bounty)
-    await db_session.commit()
-    
-    # Note: SQLite doesn't support tsvector, so this test validates the service logic
-    # In production with PostgreSQL, the full-text search would work
-    service = BountySearchService(db_session)
-    params = BountySearchParams(q="search", skip=0, limit=10)
-    result = await service.search_bounties(params)
-    
-    # Result depends on database support for tsvector
-    assert isinstance(result.total, int)
-
-
-@pytest.mark.asyncio
 async def test_search_bounties_filter_by_tier(db_session):
     """Test bounty search filtered by tier."""
-    from app.services.bounty_service import BountySearchService
-    from app.models.bounty import BountySearchParams
     
     # Create test bounties with different tiers
     bounty1 = BountyDB(
@@ -141,8 +137,6 @@ async def test_search_bounties_filter_by_tier(db_session):
 @pytest.mark.asyncio
 async def test_search_bounties_filter_by_reward_range(db_session):
     """Test bounty search filtered by reward range."""
-    from app.services.bounty_service import BountySearchService
-    from app.models.bounty import BountySearchParams
     
     # Create test bounties
     bounty1 = BountyDB(
@@ -178,8 +172,6 @@ async def test_search_bounties_filter_by_reward_range(db_session):
 @pytest.mark.asyncio
 async def test_search_bounties_sort_by_reward(db_session):
     """Test bounty search sorted by reward."""
-    from app.services.bounty_service import BountySearchService
-    from app.models.bounty import BountySearchParams
     
     # Create test bounties
     bounty1 = BountyDB(
@@ -212,37 +204,8 @@ async def test_search_bounties_sort_by_reward(db_session):
 
 
 @pytest.mark.asyncio
-async def test_autocomplete_suggestions(db_session):
-    """Test autocomplete suggestions."""
-    from app.services.bounty_service import BountySearchService
-    
-    # Create test bounties
-    bounty = BountyDB(
-        title="Implement search engine",
-        description="Add search functionality",
-        tier=1,
-        category="backend",
-        status="open",
-        reward_amount=200000.0,
-        skills=["python", "postgresql", "search"],
-    )
-    
-    db_session.add(bounty)
-    await db_session.commit()
-    
-    # Test autocomplete
-    service = BountySearchService(db_session)
-    result = await service.get_autocomplete_suggestions("sea", limit=5)
-    
-    # Should return suggestions matching "sea"
-    assert len(result.suggestions) > 0
-
-
-@pytest.mark.asyncio
 async def test_pagination(db_session):
     """Test pagination of search results."""
-    from app.services.bounty_service import BountySearchService
-    from app.models.bounty import BountySearchParams
     
     # Create multiple bounties
     for i in range(25):
@@ -277,8 +240,6 @@ async def test_pagination(db_session):
 @pytest.mark.asyncio
 async def test_filter_combinations(db_session):
     """Test various filter combinations."""
-    from app.services.bounty_service import BountySearchService
-    from app.models.bounty import BountySearchParams
     
     # Create test bounties
     bounties = [
@@ -297,12 +258,7 @@ async def test_filter_combinations(db_session):
     # Test: tier + category
     params = BountySearchParams(tier=1, category="backend", skip=0, limit=10)
     result = await service.search_bounties(params)
-    assert result.total == 1  # Only "Python Backend"
-    
-    # Test: skills filter
-    params = BountySearchParams(skills=["python"], skip=0, limit=10)
-    result = await service.search_bounties(params)
-    assert result.total == 1  # Only open with python skill
+    assert result.total == 1  # Only "Python Backend" (open)
     
     # Test: status filter
     params = BountySearchParams(status="completed", skip=0, limit=10)

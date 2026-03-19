@@ -3,8 +3,10 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.models.bounty import (
+    BountyDB,
     BountySearchParams,
     BountyListResponse,
     BountyResponse,
@@ -13,24 +15,9 @@ from app.models.bounty import (
     AutocompleteResponse,
 )
 from app.services.bounty_service import BountySearchService
+from app.database import get_db
 
 router = APIRouter(prefix="/bounties", tags=["bounties"])
-
-
-# Database dependency (placeholder - should be configured in main.py)
-async def get_db():
-    """Get database session."""
-    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSessionLocal
-    import os
-    
-    database_url = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost/solfoundry")
-    
-    engine = create_async_engine(database_url, echo=True)
-    async with AsyncSessionLocal(engine) as session:
-        try:
-            yield session
-        finally:
-            await session.close()
 
 
 @router.get("/search", response_model=BountyListResponse)

@@ -1,7 +1,7 @@
 """Bounty search and filter service."""
 
-from typing import Optional
-from sqlalchemy import select, or_, func, desc, asc
+from typing import Optional, List
+from sqlalchemy import select, or_, and_, func, desc, asc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
@@ -15,54 +15,57 @@ class BountySearchService:
         self.db = db
     
     async def search_bounties(self, params: BountySearchParams) -> BountyListResponse:
-        """Full-text search with filtering and sorting."""
+        """
+        Full-text search with filtering and sorting.
         
-        # Base query
-        query = select(BountyDB)
-        count_query = select(func.count(BountyDB.id))
+        Uses PostgreSQL tsvector for efficient full-text search.
+        All filters are combined with AND logic for predictable results.
+        """
         
-        # Full-text search using PostgreSQL tsvector
-        if params.q:
-            # Use plainto_tsquery for user-friendly search
-            ts_query = func.plainto_tsquery('english', params.q)
-            query = query.where(BountyDB.search_vector.op('@@')(ts_query))
-            count_query = count_query.where(BountyDB.search_vector.op('@@')(ts_query))
+        # Build filter conditions list
+        conditions = []
+        
+        # Default to open bounties only
+        if params.status:
+            conditions.append(BountyDB.status == params.status)
+        else:
+            conditions.append(BountyDB.status == "open")
         
         # Filter by tier
         if params.tier:
-            query = query.where(BountyDB.tier == params.tier)
-            count_query = count_query.where(BountyDB.tier == params.tier)
+            conditions.append(BountyDB.tier == params.tier)
         
         # Filter by category
         if params.category:
-            query = query.where(BountyDB.category == params.category)
-            count_query = count_query.where(BountyDB.category == params.category)
-        
-        # Filter by status
-        if params.status:
-            query = query.where(BountyDB.status == params.status)
-            count_query = count_query.where(BountyDB.status == params.status)
-        else:
-            # Default to open bounties only
-            query = query.where(BountyDB.status == "open")
-            count_query = count_query.where(BountyDB.status == "open")
+            conditions.append(BountyDB.category == params.category)
         
         # Filter by reward range
         if params.reward_min is not None:
-            query = query.where(BountyDB.reward_amount >= params.reward_min)
-            count_query = count_query.where(BountyDB.reward_amount >= params.reward_min)
+            conditions.append(BountyDB.reward_amount >= params.reward_min)
         
         if params.reward_max is not None:
-            query = query.where(BountyDB.reward_amount <= params.reward_max)
-            count_query = count_query.where(BountyDB.reward_amount <= params.reward_max)
+            conditions.append(BountyDB.reward_amount <= params.reward_max)
         
-        # Filter by skills (JSON array overlap)
+        # Filter by skills (check each skill is in the skills array)
         if params.skills:
             for skill in params.skills:
-                query = query.where(BountyDB.skills.contains([skill]))
-                count_query = count_query.where(BountyDB.skills.contains([skill]))
+                conditions.append(BountyDB.skills.op('?')(skill))
         
-        # Sorting
+        # Build base queries
+        base_filter = and_(*conditions) if conditions else True
+        
+        # Full-text search using PostgreSQL tsvector
+        if params.q:
+            ts_query = func.plainto_tsquery('english', params.q)
+            search_condition = BountyDB.search_vector.op('@@')(ts_query)
+            final_filter = and_(base_filter, search_condition)
+        else:
+            final_filter = base_filter
+        
+        # Count query
+        count_query = select(func.count(BountyDB.id)).where(final_filter)
+        
+        # Main query with sorting
         sort_column = {
             "newest": desc(BountyDB.created_at),
             "reward_high": desc(BountyDB.reward_amount),
@@ -71,10 +74,13 @@ class BountySearchService:
             "popularity": desc(BountyDB.popularity),
         }.get(params.sort, desc(BountyDB.created_at))
         
-        query = query.order_by(sort_column)
-        
-        # Pagination
-        query = query.offset(params.skip).limit(params.limit)
+        query = (
+            select(BountyDB)
+            .where(final_filter)
+            .order_by(sort_column)
+            .offset(params.skip)
+            .limit(params.limit)
+        )
         
         # Execute queries
         result = await self.db.execute(query)

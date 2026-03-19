@@ -8,9 +8,8 @@ from enum import Enum
 from pydantic import BaseModel, Field
 from sqlalchemy import Column, String, DateTime, JSON, Float, Integer, Text, Index
 from sqlalchemy.dialects.postgresql import UUID, TSVECTOR
-from sqlalchemy.orm import DeclarativeBase
 
-from app.models.contributor import Base
+from app.database import Base
 
 
 class BountyTier(int, Enum):
