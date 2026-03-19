@@ -1,4 +1,9 @@
-"""Notification service for managing user notifications."""
+"""Notification service for managing user notifications.
+
+This module provides the business logic for notification operations.
+All methods are designed to work with the Unit of Work pattern
+implemented in the database layer.
+"""
 
 from typing import List, Optional
 from sqlalchemy import select, func, and_
@@ -21,6 +26,20 @@ class NotificationService:
     
     def __init__(self, db: AsyncSession):
         self.db = db
+    
+    async def get_notification_by_id(self, notification_id: str) -> Optional[NotificationDB]:
+        """
+        Get a single notification by ID.
+        
+        Args:
+            notification_id: The notification ID to retrieve.
+            
+        Returns:
+            The notification if found, None otherwise.
+        """
+        query = select(NotificationDB).where(NotificationDB.id == notification_id)
+        result = await self.db.execute(query)
+        return result.scalar_one_or_none()
     
     async def get_notifications(
         self,
@@ -196,3 +215,30 @@ class NotificationService:
         # Session will auto-commit on exit
         
         return notification
+    
+    async def delete_notification(self, notification_id: str, user_id: str) -> bool:
+        """
+        Delete a notification.
+        
+        Args:
+            notification_id: The notification to delete.
+            user_id: The user who owns the notification.
+            
+        Returns:
+            True if deleted, False if not found.
+        """
+        query = select(NotificationDB).where(
+            and_(
+                NotificationDB.id == notification_id,
+                NotificationDB.user_id == user_id
+            )
+        )
+        
+        result = await self.db.execute(query)
+        notification = result.scalar_one_or_none()
+        
+        if not notification:
+            return False
+        
+        await self.db.delete(notification)
+        return True
