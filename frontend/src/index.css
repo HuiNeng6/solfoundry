@@ -1,0 +1,121 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base styles */
+@layer base {
+  html {
+    @apply antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100;
+    @apply min-h-screen;
+  }
+
+  /* Improve focus visibility for accessibility */
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-500 ring-offset-2 ring-offset-white dark:ring-offset-gray-900;
+  }
+}
+
+/* Component styles */
+@layer components {
+  /* Sidebar navigation links */
+  .sidebar-link {
+    @apply flex items-center gap-3 rounded-lg px-3 py-2.5;
+    @apply text-sm font-medium text-gray-600 dark:text-gray-400;
+    @apply hover:bg-gray-100 dark:hover:bg-gray-800;
+    @apply hover:text-gray-900 dark:hover:text-gray-100;
+    @apply transition-colors duration-150;
+    @apply min-h-touch; /* 44px minimum touch target */
+  }
+
+  .sidebar-link-active {
+    @apply bg-brand-50 dark:bg-brand-900/20;
+    @apply text-brand-600 dark:text-brand-400;
+    @apply hover:bg-brand-100 dark:hover:bg-brand-900/30;
+  }
+
+  /* Mobile overlay for sidebar */
+  .mobile-overlay {
+    @apply fixed inset-0 bg-black/50 z-20;
+    @apply lg:hidden;
+    @apply backdrop-blur-sm;
+  }
+
+  /* Card layouts for mobile tables */
+  .mobile-card {
+    @apply bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700;
+    @apply p-4 space-y-3;
+  }
+
+  /* Touch-friendly button base */
+  .touch-button {
+    @apply min-w-touch min-h-touch; /* 44px minimum */
+    @apply flex items-center justify-center;
+    @apply rounded-lg;
+    @apply transition-colors duration-150;
+  }
+}
+
+/* Utility styles */
+@layer utilities {
+  /* Safe area insets for notched devices */
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .safe-left {
+    padding-left: env(safe-area-inset-left);
+  }
+
+  .safe-right {
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* Scrollbar styling */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.gray.300') transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 dark:bg-gray-700 rounded-full;
+  }
+}
+
+/* Responsive table card layout */
+@media (max-width: 767px) {
+  .responsive-table {
+    @apply hidden;
+  }
+
+  .responsive-cards {
+    @apply block space-y-3;
+  }
+}
+
+@media (min-width: 768px) {
+  .responsive-table {
+    @apply block;
+  }
+
+  .responsive-cards {
+    @apply hidden;
+  }
+}

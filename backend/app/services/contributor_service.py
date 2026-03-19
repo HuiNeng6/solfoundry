@@ -1,95 +1,158 @@
-"""In-memory contributor service for MVP."""
+"""Contributor profile service."""
 
-import uuid
-from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
+from sqlalchemy import select, func, desc
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.contributor import (
-    ContributorDB, ContributorCreate, ContributorListItem, ContributorListResponse,
-    ContributorResponse, ContributorStats, ContributorUpdate,
+from app.models.contributor_profile import (
+    ContributorDB,
+    ContributorProfile,
+    ContributorListItem,
+    LeaderboardResponse,
+    ContributorStats,
+    ContributorTier,
 )
 
-_store: dict[str, ContributorDB] = {}
 
-
-def _db_to_response(db: ContributorDB) -> ContributorResponse:
-    return ContributorResponse(
-        id=str(db.id), username=db.username, display_name=db.display_name,
-        email=db.email, avatar_url=db.avatar_url, bio=db.bio,
-        skills=db.skills or [], badges=db.badges or [], social_links=db.social_links or {},
-        stats=ContributorStats(
-            total_contributions=db.total_contributions,
-            total_bounties_completed=db.total_bounties_completed,
-            total_earnings=db.total_earnings, reputation_score=db.reputation_score,
-        ),
-        created_at=db.created_at, updated_at=db.updated_at,
-    )
-
-
-def _db_to_list_item(db: ContributorDB) -> ContributorListItem:
-    return ContributorListItem(
-        id=str(db.id), username=db.username, display_name=db.display_name,
-        avatar_url=db.avatar_url, skills=db.skills or [], badges=db.badges or [],
-        stats=ContributorStats(
-            total_contributions=db.total_contributions,
-            total_bounties_completed=db.total_bounties_completed,
-            total_earnings=db.total_earnings, reputation_score=db.reputation_score,
-        ),
-    )
-
-
-def create_contributor(data: ContributorCreate) -> ContributorResponse:
-    db = ContributorDB(
-        id=uuid.uuid4(), username=data.username, display_name=data.display_name,
-        email=data.email, avatar_url=data.avatar_url, bio=data.bio,
-        skills=data.skills, badges=data.badges, social_links=data.social_links,
-    )
-    _store[str(db.id)] = db
-    return _db_to_response(db)
-
-
-def list_contributors(
-    search: Optional[str] = None, skills: Optional[list[str]] = None,
-    badges: Optional[list[str]] = None, skip: int = 0, limit: int = 20,
-) -> ContributorListResponse:
-    results = list(_store.values())
-    if search:
-        q = search.lower()
-        results = [r for r in results if q in r.username.lower() or q in r.display_name.lower()]
-    if skills:
-        s = set(skills)
-        results = [r for r in results if s & set(r.skills or [])]
-    if badges:
-        b = set(badges)
-        results = [r for r in results if b & set(r.badges or [])]
-    total = len(results)
-    return ContributorListResponse(
-        items=[_db_to_list_item(r) for r in results[skip:skip + limit]],
-        total=total, skip=skip, limit=limit,
-    )
-
-
-def get_contributor(contributor_id: str) -> Optional[ContributorResponse]:
-    db = _store.get(contributor_id)
-    return _db_to_response(db) if db else None
-
-
-def get_contributor_by_username(username: str) -> Optional[ContributorResponse]:
-    for db in _store.values():
-        if db.username == username:
-            return _db_to_response(db)
-    return None
-
-
-def update_contributor(contributor_id: str, data: ContributorUpdate) -> Optional[ContributorResponse]:
-    db = _store.get(contributor_id)
-    if not db:
-        return None
-    for key, value in data.model_dump(exclude_unset=True).items():
-        setattr(db, key, value)
-    db.updated_at = datetime.now(timezone.utc)
-    return _db_to_response(db)
-
-
-def delete_contributor(contributor_id: str) -> bool:
-    return _store.pop(contributor_id, None) is not None
+class ContributorService:
+    """Service for contributor profile operations."""
+    
+    # Points thresholds for tiers
+    TIER_THRESHOLDS = {
+        ContributorTier.BRONZE: 0,
+        ContributorTier.SILVER: 100,
+        ContributorTier.GOLD: 500,
+        ContributorTier.PLATINUM: 2000,
+        ContributorTier.LEGENDARY: 10000,
+    }
+    
+    def __init__(self, db: AsyncSession):
+        self.db = db
+    
+    async def get_profile(self, github_username: str) -> Optional[ContributorProfile]:
+        """
+        Get a contributor's full profile.
+        
+        Args:
+            github_username: GitHub username.
+            
+        Returns:
+            ContributorProfile or None if not found.
+        """
+        query = select(ContributorDB).where(
+            ContributorDB.github_username == github_username
+        )
+        
+        result = await self.db.execute(query)
+        contributor = result.scalar_one_or_none()
+        
+        if not contributor:
+            return None
+        
+        # Build stats
+        stats = ContributorStats(
+            total_prs=contributor.total_prs,
+            merged_prs=contributor.merged_prs,
+            total_issues=contributor.total_issues,
+            closed_issues=contributor.closed_issues,
+            total_commits=contributor.total_commits,
+            lines_added=contributor.lines_added,
+            lines_removed=contributor.lines_removed,
+        )
+        
+        # Get rank
+        rank = await self._get_rank(contributor.points)
+        
+        return ContributorProfile(
+            id=str(contributor.id),
+            github_username=contributor.github_username,
+            avatar_url=contributor.avatar_url,
+            bio=contributor.bio,
+            stats=stats,
+            points=contributor.points,
+            tier=contributor.tier,
+            achievements=contributor.achievements or [],
+            category_stats=contributor.category_stats,
+            first_contribution=contributor.first_contribution,
+            last_contribution=contributor.last_contribution,
+            rank=rank,
+        )
+    
+    async def get_leaderboard(
+        self,
+        skip: int = 0,
+        limit: int = 20,
+        tier: Optional[str] = None,
+    ) -> LeaderboardResponse:
+        """
+        Get the contributor leaderboard.
+        
+        Args:
+            skip: Pagination offset.
+            limit: Results per page.
+            tier: Filter by tier (optional).
+            
+        Returns:
+            LeaderboardResponse with contributors sorted by points.
+        """
+        conditions = []
+        if tier:
+            conditions.append(ContributorDB.tier == tier)
+        
+        filter_condition = conditions[0] if conditions else None
+        
+        # Count query
+        count_query = select(func.count(ContributorDB.id))
+        if filter_condition is not None:
+            count_query = count_query.where(filter_condition)
+        
+        # Main query
+        query = select(ContributorDB).order_by(desc(ContributorDB.points))
+        if filter_condition is not None:
+            query = query.where(filter_condition)
+        query = query.offset(skip).limit(limit)
+        
+        # Execute
+        result = await self.db.execute(query)
+        contributors = result.scalars().all()
+        
+        count_result = await self.db.execute(count_query)
+        total = count_result.scalar() or 0
+        
+        return LeaderboardResponse(
+            items=[ContributorListItem.model_validate(c) for c in contributors],
+            total=total,
+            skip=skip,
+            limit=limit,
+        )
+    
+    async def _get_rank(self, points: int) -> int:
+        """Get global rank for a contributor based on points."""
+        query = select(func.count(ContributorDB.id)).where(
+            ContributorDB.points > points
+        )
+        result = await self.db.execute(query)
+        higher_count = result.scalar() or 0
+        return higher_count + 1
+    
+    @classmethod
+    def calculate_tier(cls, points: int) -> str:
+        """
+        Calculate tier based on points.
+        
+        Args:
+            points: Total points.
+            
+        Returns:
+            Tier name.
+        """
+        if points >= cls.TIER_THRESHOLDS[ContributorTier.LEGENDARY]:
+            return ContributorTier.LEGENDARY.value
+        elif points >= cls.TIER_THRESHOLDS[ContributorTier.PLATINUM]:
+            return ContributorTier.PLATINUM.value
+        elif points >= cls.TIER_THRESHOLDS[ContributorTier.GOLD]:
+            return ContributorTier.GOLD.value
+        elif points >= cls.TIER_THRESHOLDS[ContributorTier.SILVER]:
+            return ContributorTier.SILVER.value
+        else:
+            return ContributorTier.BRONZE.value

@@ -11,12 +11,17 @@ interface HeaderProps {
 export function Header({ onMenuClick, theme, onToggleTheme }: HeaderProps) {
   const [searchFocused, setSearchFocused] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
+        // On mobile, open the search modal
+        if (window.innerWidth < 640) {
+          setMobileSearchOpen(true);
+        }
         searchInputRef.current?.focus();
       }
     };
@@ -26,71 +31,89 @@ export function Header({ onMenuClick, theme, onToggleTheme }: HeaderProps) {
 
   return (
     <header
-      className="sticky top-0 z-20 flex h-14 items-center justify-between border-b
+      className="sticky top-0 z-20 flex h-14 sm:h-16 items-center justify-between border-b
                  border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80
-                 backdrop-blur-md px-4 sm:px-6"
+                 backdrop-blur-md px-3 sm:px-4 lg:px-6 safe-top"
       role="banner"
     >
       {/* Left: Mobile menu + Search */}
-      <div className="flex items-center gap-3 flex-1 min-w-0">
-        {/* Mobile hamburger */}
+      <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
+        {/* Mobile hamburger - 44px touch target */}
         <button
           type="button"
           onClick={onMenuClick}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg
+          className="touch-button w-11 h-11 -ml-2 sm:ml-0 sm:w-9 sm:h-9
                      text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200
                      hover:bg-gray-100 dark:hover:bg-gray-800
                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500
                      lg:hidden"
           aria-label="Open navigation menu"
         >
-          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
+          <svg className="h-5 w-5 sm:h-6 sm:w-6" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
           </svg>
         </button>
 
-        {/* Search bar */}
-        <div
-          className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 transition-colors
-                      ${searchFocused
-                        ? 'border-brand-400 bg-white dark:bg-gray-800 ring-2 ring-brand-500/20'
-                        : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50'
-                      } flex-1 max-w-md`}
-        >
-          <svg className="h-4 w-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
-          </svg>
-          <input
-            ref={searchInputRef}
-            type="search"
-            placeholder="Search..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onFocus={() => setSearchFocused(true)}
-            onBlur={() => setSearchFocused(false)}
-            className="w-full bg-transparent text-sm text-gray-900 dark:text-gray-100
+        {/* Search bar - hidden on very small screens, shows search icon instead */}
+        <div className="hidden sm:flex items-center gap-2 rounded-lg border px-3 py-1.5 transition-colors
+                      flex-1 max-w-md">
+          <div
+            className={`flex items-center gap-2 w-full
+                        ${searchFocused
+                          ? 'border-brand-400 bg-white dark:bg-gray-800 ring-2 ring-brand-500/20'
+                          : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50'
+                        }`}
+          >
+            <svg className="h-4 w-4 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+            </svg>
+            <input
+              ref={searchInputRef}
+              type="search"
+              placeholder="Search..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setSearchFocused(false)}
+              className="w-full bg-transparent text-sm text-gray-900 dark:text-gray-100
                        placeholder-gray-400 dark:placeholder-gray-500
                        focus:outline-none"
-            aria-label="Search"
-          />
-          <kbd
-            className="hidden sm:inline-flex items-center rounded border border-gray-200 dark:border-gray-700
+              aria-label="Search"
+            />
+            <kbd
+              className="hidden lg:inline-flex items-center rounded border border-gray-200 dark:border-gray-700
                        bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 text-[10px] font-medium
                        text-gray-500 dark:text-gray-400"
-          >
-            ⌘K
-          </kbd>
+            >
+              ⌘K
+            </kbd>
+          </div>
         </div>
+
+        {/* Mobile search button - 44px touch target */}
+        <button
+          type="button"
+          onClick={() => setMobileSearchOpen(true)}
+          className="sm:hidden touch-button w-11 h-11
+                     text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200
+                     hover:bg-gray-100 dark:hover:bg-gray-800
+                     focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+          aria-label="Open search"
+        >
+          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+          </svg>
+        </button>
       </div>
 
       {/* Right: Actions */}
-      <div className="flex items-center gap-2 ml-4">
+      <div className="flex items-center gap-1 sm:gap-2 ml-2 sm:ml-4">
         <ThemeToggle theme={theme} onToggle={onToggleTheme} />
 
-        {/* Notification bell */}
+        {/* Notification bell - 44px touch target on mobile */}
         <button
           type="button"
-          className="relative inline-flex h-9 w-9 items-center justify-center rounded-lg
+          className="touch-button w-11 h-11 sm:w-9 sm:h-9
                      text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200
                      hover:bg-gray-100 dark:hover:bg-gray-800
                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
@@ -101,17 +124,57 @@ export function Header({ onMenuClick, theme, onToggleTheme }: HeaderProps) {
           </svg>
         </button>
 
-        {/* Avatar */}
+        {/* Avatar - 44px touch target on mobile */}
         <button
           type="button"
-          className="h-8 w-8 rounded-full bg-gradient-to-br from-brand-400 to-purple-500
-                     flex items-center justify-center text-white text-xs font-bold
+          className="w-11 h-11 sm:w-8 sm:h-8 rounded-full bg-gradient-to-br from-brand-400 to-purple-500
+                     flex items-center justify-center text-white text-xs sm:text-sm font-bold
                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
           aria-label="User menu"
         >
           U
         </button>
       </div>
+
+      {/* Mobile search modal */}
+      {mobileSearchOpen && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm sm:hidden"
+          onClick={() => setMobileSearchOpen(false)}
+        >
+          <div 
+            className="fixed top-0 left-0 right-0 bg-white dark:bg-gray-900 p-4 border-b border-gray-200 dark:border-gray-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <svg className="h-5 w-5 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+              </svg>
+              <input
+                ref={searchInputRef}
+                type="search"
+                placeholder="Search..."
+                autoFocus
+                className="flex-1 bg-transparent text-base text-gray-900 dark:text-gray-100
+                         placeholder-gray-400 dark:placeholder-gray-500
+                         focus:outline-none"
+                aria-label="Search"
+              />
+              <button
+                type="button"
+                onClick={() => setMobileSearchOpen(false)}
+                className="touch-button w-11 h-11
+                         text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                aria-label="Close search"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

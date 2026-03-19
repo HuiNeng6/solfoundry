@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 interface NavItem {
   label: string;
@@ -60,21 +60,63 @@ const navItems: NavItem[] = [
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
+  mobileOpen: boolean;
+  onMobileClose: () => void;
 }
 
-export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: SidebarProps) {
   const [hoveredItem, setHoveredItem] = useState<string | null>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+
+  // Close mobile menu on route change
+  useEffect(() => {
+    const handleRouteChange = () => {
+      onMobileClose();
+    };
+    // Listen for navigation changes
+    window.addEventListener('popstate', handleRouteChange);
+    return () => window.removeEventListener('popstate', handleRouteChange);
+  }, [onMobileClose]);
+
+  // Handle escape key to close mobile menu
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && mobileOpen) {
+        onMobileClose();
+      }
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [mobileOpen, onMobileClose]);
+
+  // Prevent body scroll when mobile menu is open
+  useEffect(() => {
+    if (mobileOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [mobileOpen]);
 
   return (
-    <aside
-      className={`fixed inset-y-0 left-0 z-30 flex flex-col border-r border-gray-200 dark:border-gray-800
-                  bg-white dark:bg-gray-900 transition-all duration-200
-                  ${collapsed ? 'w-16' : 'w-64'}`}
-      aria-label="Main navigation"
-    >
-      {/* Logo area */}
-      <div className="flex h-14 items-center justify-between border-b border-gray-200 dark:border-gray-800 px-4">
-        {!collapsed && (
+    <>
+      {/* Mobile sidebar - full screen overlay */}
+      <aside
+        ref={sidebarRef}
+        className={`fixed inset-y-0 left-0 z-30 flex flex-col border-r border-gray-200 dark:border-gray-800
+                    bg-white dark:bg-gray-900
+                    transition-transform duration-300 ease-in-out
+                    w-72 max-w-[85vw]
+                    lg:hidden
+                    ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}
+        aria-label="Main navigation"
+        aria-hidden={!mobileOpen}
+      >
+        {/* Logo area */}
+        <div className="flex h-14 sm:h-16 items-center justify-between border-b border-gray-200 dark:border-gray-800 px-4">
           <div className="flex items-center gap-2">
             <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-brand-500 to-purple-600 flex items-center justify-center">
               <span className="text-white font-bold text-sm">SF</span>
@@ -83,66 +125,130 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
               SolFoundry
             </span>
           </div>
-        )}
-        <button
-          type="button"
-          onClick={onToggle}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-lg
-                     text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
-                     hover:bg-gray-100 dark:hover:bg-gray-800
-                     focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        >
-          {collapsed ? (
+          <button
+            type="button"
+            onClick={onMobileClose}
+            className="touch-button w-11 h-11
+                       text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
+                       hover:bg-gray-100 dark:hover:bg-gray-800
+                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+            aria-label="Close navigation menu"
+          >
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
             </svg>
-          ) : (
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M18.75 19.5l-7.5-7.5 7.5-7.5m-6 15L5.25 12l7.5-7.5" />
-            </svg>
-          )}
-        </button>
-      </div>
+          </button>
+        </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto p-3 space-y-1" aria-label="Sidebar navigation">
-        {navItems.map((item) => (
-          <div key={item.path} className="relative">
+        {/* Mobile Navigation */}
+        <nav className="flex-1 overflow-y-auto p-3 space-y-1 scrollbar-thin" aria-label="Mobile navigation">
+          {navItems.map((item) => (
             <NavLink
+              key={item.path}
               to={item.path}
+              onClick={onMobileClose}
               className={({ isActive }) =>
-                `sidebar-link ${isActive ? 'sidebar-link-active' : ''} ${collapsed ? 'justify-center px-2' : ''}`
+                `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`
               }
-              onMouseEnter={() => setHoveredItem(item.path)}
-              onMouseLeave={() => setHoveredItem(null)}
               aria-label={item.label}
             >
               {item.icon}
-              {!collapsed && <span>{item.label}</span>}
+              <span>{item.label}</span>
             </NavLink>
-            {/* Tooltip for collapsed state */}
-            {collapsed && hoveredItem === item.path && (
-              <div
-                role="tooltip"
-                className="absolute left-full top-1/2 -translate-y-1/2 ml-2 rounded-md bg-gray-900 dark:bg-gray-100
-                           px-2 py-1 text-xs font-medium text-white dark:text-gray-900 shadow-lg whitespace-nowrap z-50"
-              >
-                {item.label}
-              </div>
-            )}
-          </div>
-        ))}
-      </nav>
+          ))}
+        </nav>
 
-      {/* Footer */}
-      {!collapsed && (
+        {/* Mobile Footer */}
         <div className="border-t border-gray-200 dark:border-gray-800 p-4">
           <p className="text-xs text-gray-400 dark:text-gray-600">
             SolFoundry v0.1.0
           </p>
         </div>
-      )}
-    </aside>
+      </aside>
+
+      {/* Desktop sidebar */}
+      <aside
+        className={`hidden lg:flex flex-col border-r border-gray-200 dark:border-gray-800
+                    bg-white dark:bg-gray-900 transition-all duration-200
+                    fixed inset-y-0 left-0 z-30
+                    ${collapsed ? 'w-16' : 'w-64'}`}
+        aria-label="Main navigation"
+      >
+        {/* Logo area */}
+        <div className="flex h-14 items-center justify-between border-b border-gray-200 dark:border-gray-800 px-4">
+          {!collapsed && (
+            <div className="flex items-center gap-2">
+              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-brand-500 to-purple-600 flex items-center justify-center">
+                <span className="text-white font-bold text-sm">SF</span>
+              </div>
+              <span className="text-lg font-bold text-gray-900 dark:text-white tracking-tight">
+                SolFoundry
+              </span>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={onToggle}
+            className="touch-button w-11 h-11
+                       text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
+                       hover:bg-gray-100 dark:hover:bg-gray-800
+                       focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {collapsed ? (
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+              </svg>
+            ) : (
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M18.75 19.5l-7.5-7.5 7.5-7.5m-6 15L5.25 12l7.5-7.5" />
+              </svg>
+            )}
+          </button>
+        </div>
+
+        {/* Desktop Navigation */}
+        <nav className="flex-1 overflow-y-auto p-3 space-y-1 scrollbar-thin" aria-label="Sidebar navigation">
+          {navItems.map((item) => (
+            <div key={item.path} className="relative">
+              <NavLink
+                to={item.path}
+                className={({ isActive }) =>
+                  `sidebar-link ${isActive ? 'sidebar-link-active' : ''} ${collapsed ? 'justify-center px-2' : ''}`
+                }
+                onMouseEnter={() => setHoveredItem(item.path)}
+                onMouseLeave={() => setHoveredItem(null)}
+                aria-label={item.label}
+              >
+                {item.icon}
+                {!collapsed && <span>{item.label}</span>}
+              </NavLink>
+              {/* Tooltip for collapsed state - positioned to avoid overflow */}
+              {collapsed && hoveredItem === item.path && (
+                <div
+                  role="tooltip"
+                  className="absolute left-full top-1/2 -translate-y-1/2 ml-2 rounded-md bg-gray-900 dark:bg-gray-100
+                             px-2 py-1 text-xs font-medium text-white dark:text-gray-900 shadow-lg whitespace-nowrap z-50"
+                >
+                  {item.label}
+                  {/* Arrow pointing left */}
+                  <div className="absolute left-0 top-1/2 -translate-x-1 -translate-y-1/2
+                                  w-2 h-2 bg-gray-900 dark:bg-gray-100 rotate-45" />
+                </div>
+              )}
+            </div>
+          ))}
+        </nav>
+
+        {/* Desktop Footer */}
+        {!collapsed && (
+          <div className="border-t border-gray-200 dark:border-gray-800 p-4">
+            <p className="text-xs text-gray-400 dark:text-gray-600">
+              SolFoundry v0.1.0
+            </p>
+          </div>
+        )}
+      </aside>
+    </>
   );
 }
