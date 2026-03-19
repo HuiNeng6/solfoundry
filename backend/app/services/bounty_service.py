@@ -46,9 +46,10 @@ class BountySearchService:
         if params.reward_max is not None:
             conditions.append(BountyDB.reward_amount <= params.reward_max)
         
-        # Filter by skills (check each skill is in the skills array)
-        if params.skills:
-            for skill in params.skills:
+        # Filter by skills (parse comma-separated string)
+        skills_list = params.get_skills_list()
+        if skills_list:
+            for skill in skills_list:
                 conditions.append(BountyDB.skills.op('?')(skill))
         
         # Build base queries

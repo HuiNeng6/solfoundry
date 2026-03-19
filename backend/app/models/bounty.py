@@ -135,16 +135,23 @@ class BountyListResponse(BaseModel):
 
 
 class BountySearchParams(BaseModel):
-    q: Optional[str] = None
-    tier: Optional[int] = None
-    category: Optional[str] = None
-    status: Optional[str] = None
-    reward_min: Optional[float] = None
-    reward_max: Optional[float] = None
-    skills: Optional[list[str]] = None
-    sort: Optional[str] = Field("newest", pattern="^(newest|reward_high|reward_low|deadline|popularity)$")
-    skip: int = Field(0, ge=0)
-    limit: int = Field(20, ge=1, le=100)
+    """Parameters for bounty search endpoint."""
+    q: Optional[str] = Field(None, description="Full-text search query")
+    tier: Optional[int] = Field(None, ge=1, le=3, description="Filter by tier (1/2/3)")
+    category: Optional[str] = Field(None, description="Filter by category")
+    status: Optional[str] = Field(None, description="Filter by status")
+    reward_min: Optional[float] = Field(None, ge=0, description="Minimum reward amount")
+    reward_max: Optional[float] = Field(None, ge=0, description="Maximum reward amount")
+    skills: Optional[str] = Field(None, description="Comma-separated list of skills")
+    sort: str = Field("newest", pattern="^(newest|reward_high|reward_low|deadline|popularity)$", description="Sort order")
+    skip: int = Field(0, ge=0, description="Pagination offset")
+    limit: int = Field(20, ge=1, le=100, description="Number of results per page")
+    
+    def get_skills_list(self) -> Optional[List[str]]:
+        """Parse comma-separated skills string into list."""
+        if not self.skills:
+            return None
+        return [s.strip() for s in self.skills.split(",") if s.strip()]
 
 
 class AutocompleteSuggestion(BaseModel):

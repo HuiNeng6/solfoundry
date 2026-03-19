@@ -29,7 +29,7 @@ async def search_bounties(
     reward_min: Optional[float] = Query(None, ge=0, description="Minimum reward amount"),
     reward_max: Optional[float] = Query(None, ge=0, description="Maximum reward amount"),
     skills: Optional[str] = Query(None, description="Comma-separated list of skills"),
-    sort: str = Query("newest", regex="^(newest|reward_high|reward_low|deadline|popularity)$", description="Sort order"),
+    sort: str = Query("newest", pattern="^(newest|reward_high|reward_low|deadline|popularity)$", description="Sort order"),
     skip: int = Query(0, ge=0, description="Number of items to skip"),
     limit: int = Query(20, ge=1, le=100, description="Number of items to return"),
     db: AsyncSession = Depends(get_db),
@@ -49,9 +49,6 @@ async def search_bounties(
     - **limit**: Number of results per page
     """
     
-    # Parse skills from comma-separated string
-    skills_list = skills.split(",") if skills else None
-    
     params = BountySearchParams(
         q=q,
         tier=tier,
@@ -59,7 +56,7 @@ async def search_bounties(
         status=status,
         reward_min=reward_min,
         reward_max=reward_max,
-        skills=skills_list,
+        skills=skills,
         sort=sort,
         skip=skip,
         limit=limit,
