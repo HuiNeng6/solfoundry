@@ -117,19 +117,17 @@ async def init_db() -> None:
     
     This should be called once during application startup.
     It creates all tables and sets up the search vector trigger.
-    
-    The search vector trigger ensures that the search_vector column
-    is automatically maintained whenever a bounty's title or description
-    changes. This is the single source of truth for search indexing.
     """
     logger.info("Initializing database schema...")
     
     async with engine.begin() as conn:
+        # Import models to ensure they are registered with Base
+        from app.models.notification import NotificationDB  # noqa: F401
+        
         # Create all tables from model definitions
         await conn.run_sync(Base.metadata.create_all)
         
         # Create the search vector trigger function
-        # This function is called automatically by the trigger
         await conn.execute(text("""
             CREATE OR REPLACE FUNCTION update_bounty_search_vector()
             RETURNS TRIGGER AS $$
