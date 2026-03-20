@@ -1,24 +1,33 @@
 """WebSocket API endpoints for real-time updates.
 
 This module provides WebSocket endpoints for real-time event streaming:
-- PR status changes
-- New comments
-- Review completions
+- Bounty status changes (new, updated, claimed)
+- PR submission events
 - Payout notifications
+- Leaderboard updates
 
 Endpoints:
-    WS /ws/{user_id} - Main WebSocket connection endpoint
+    WS /ws - Main WebSocket connection endpoint
 
-Message Format:
+Message Format (matching bounty spec):
     Incoming:
-        {"type": "subscribe", "scope": "repo", "target_id": "repo_123"}
-        {"type": "unsubscribe", "scope": "repo", "target_id": "repo_123"}
-        {"type": "pong", "ping_id": "ping_123456"}
+        {"subscribe": "bounties"}                    # Subscribe to all bounties
+        {"subscribe": "bounty:42"}                   # Subscribe to specific bounty
+        {"unsubscribe": "bounties"}                  # Unsubscribe from channel
+        {"type": "pong", "ping_id": "ping_123456"}   # Pong response to heartbeat
+        {"type": "ping"}                             # Client-initiated ping
     
-    Outgoing:
-        {"event": "pr_status_changed", "timestamp": "...", "data": {...}}
-        {"event": "heartbeat", "timestamp": "...", "ping_id": "ping_123456"}
-        {"event": "error", "error_code": "...", "error_message": "..."}
+    Outgoing (matching bounty spec):
+        {"type": "bounty_claimed", "data": {...}, "timestamp": "2024-01-01T00:00:00Z"}
+        {"type": "heartbeat", "ping_id": "...", "timestamp": "..."}
+        {"type": "error", "error_code": "...", "error_message": "..."}
+
+Channels:
+    - bounties: New/updated bounties
+    - prs: PR submission events
+    - payouts: Live payout feed
+    - leaderboard: Rank changes
+    - bounty:42: Specific bounty updates
 """
 
 import logging
@@ -26,13 +35,12 @@ import json
 from typing import Optional
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, status
 
 from app.services.websocket_manager import (
     manager,
     EventType,
-    SubscriptionScope,
-    Subscription,
+    Channel,
     ErrorMessage,
 )
 
@@ -42,53 +50,62 @@ router = APIRouter(tags=["websocket"])
 
 
 # Incoming message schemas
-class SubscribeMessage(BaseModel):
+class SubscribeMessage:
     """Client subscription request."""
-    type: str = "subscribe"
-    scope: str
-    target_id: str
+    def __init__(self, channel: str):
+        self.channel = channel
 
 
-class UnsubscribeMessage(BaseModel):
+class UnsubscribeMessage:
     """Client unsubscription request."""
-    type: str = "unsubscribe"
-    scope: str
-    target_id: str
+    def __init__(self, channel: str):
+        self.channel = channel
 
 
-class PongMessage(BaseModel):
+class PongMessage:
     """Client pong response to heartbeat."""
-    type: str = "pong"
-    ping_id: str
+    def __init__(self, ping_id: str):
+        self.ping_id = ping_id
 
 
-class PingMessage(BaseModel):
+class PingMessage:
     """Client-initiated ping for connection testing."""
-    type: str = "ping"
+    pass
 
 
-class ClientMessage(BaseModel):
-    """Base class for client messages."""
-    type: str
+async def parse_client_message(data: str) -> Optional[object]:
+    """Parse incoming WebSocket message.
     
-    class Config:
-        extra = "allow"  # Allow additional fields for different message types
-
-
-async def parse_client_message(data: str) -> Optional[BaseModel]:
-    """Parse incoming WebSocket message."""
+    Supports both formats:
+    - Simple: {"subscribe": "bounty:42"}
+    - Legacy: {"type": "subscribe", "channel": "bounties"}
+    """
     try:
         raw = json.loads(data)
+        
+        # Simple format: {"subscribe": "channel"} or {"unsubscribe": "channel"}
+        if "subscribe" in raw:
+            return SubscribeMessage(channel=raw["subscribe"])
+        elif "unsubscribe" in raw:
+            return UnsubscribeMessage(channel=raw["unsubscribe"])
+        
+        # Legacy format with type field
         msg_type = raw.get("type", "").lower()
         
         if msg_type == "subscribe":
-            return SubscribeMessage(**raw)
+            channel = raw.get("channel") or raw.get("scope", "")
+            if raw.get("target_id"):
+                channel = f"{channel}:{raw['target_id']}"
+            return SubscribeMessage(channel=channel)
         elif msg_type == "unsubscribe":
-            return UnsubscribeMessage(**raw)
+            channel = raw.get("channel") or raw.get("scope", "")
+            if raw.get("target_id"):
+                channel = f"{channel}:{raw['target_id']}"
+            return UnsubscribeMessage(channel=channel)
         elif msg_type == "pong":
-            return PongMessage(**raw)
+            return PongMessage(ping_id=raw.get("ping_id", ""))
         elif msg_type == "ping":
-            return PingMessage(**raw)
+            return PingMessage()
         else:
             logger.warning(f"Unknown message type: {msg_type}")
             return None
@@ -96,8 +113,8 @@ async def parse_client_message(data: str) -> Optional[BaseModel]:
     except json.JSONDecodeError:
         logger.warning("Invalid JSON received")
         return None
-    except ValidationError as e:
-        logger.warning(f"Validation error: {e}")
+    except Exception as e:
+        logger.warning(f"Message parse error: {e}")
         return None
 
 
@@ -116,65 +133,103 @@ async def send_error(
     await websocket.send_json(error.model_dump(mode="json"))
 
 
-@router.websocket("/ws/{user_id}")
+async def authenticate_user(token: Optional[str], user_id: Optional[str]) -> Optional[str]:
+    """
+    Authenticate user via JWT token.
+    
+    Args:
+        token: JWT token from query param or first message
+        user_id: Optional user_id for backward compatibility
+        
+    Returns:
+        Authenticated user_id or None if authentication fails
+    """
+    if not token:
+        # Allow unauthenticated connections for public channels
+        return user_id or f"anonymous_{datetime.now(timezone.utc).timestamp()}"
+    
+    try:
+        from app.services.auth_service import decode_token, InvalidTokenError, TokenExpiredError
+        validated_user_id = decode_token(token)
+        return validated_user_id
+    except (InvalidTokenError, TokenExpiredError) as e:
+        logger.warning(f"Authentication failed: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Authentication error: {e}")
+        return None
+
+
+@router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    user_id: str,
-    token: Optional[str] = Query(None),
-    reconnect: bool = Query(False)
+    token: Optional[str] = Query(None)
 ):
     """
     Main WebSocket endpoint for real-time updates.
     
-    Args:
-        user_id: The authenticated user's ID
-        token: Optional authentication token (for future auth integration)
-        reconnect: Whether this is a reconnection attempt
+    Authentication:
+        - JWT token in query param: ws://api.solfoundry.org/ws?token=xxx
+        - Or first message: {"type": "auth", "token": "xxx"}
     
     Connection Flow:
-        1. Client connects with user_id (and optionally token)
+        1. Client connects with optional JWT token
         2. Server accepts connection and sends confirmation
-        3. Client subscribes to channels (user, repo, bounty)
+        3. Client subscribes to channels
         4. Server sends events matching subscriptions
         5. Server sends periodic heartbeats
         6. Client responds with pong
-        7. On disconnect, client can reconnect with reconnect=true
+    
+    Channels:
+        - bounties: All bounty updates
+        - bounty:42: Specific bounty #42
+        - prs: All PR events
+        - payouts: All payout events
+        - leaderboard: Rank changes
     
     Example:
-        ws = WebSocket("ws://localhost:8000/ws/user_123?token=abc")
-        ws.send('{"type": "subscribe", "scope": "repo", "target_id": "repo_456"}')
+        const ws = new WebSocket("ws://localhost:8000/ws?token=xxx");
+        ws.send(JSON.stringify({subscribe: "bounties"}));
+        ws.send(JSON.stringify({subscribe: "bounty:42"}));
     """
-    # TODO: Add proper authentication when auth system is ready
-    # For now, we accept any user_id
-    # if not validate_token(token, user_id):
-    #     await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-    #     return
+    # Authenticate user
+    user_id = await authenticate_user(token, None)
+    authenticated = token is not None and user_id is not None
+    
+    if token and not authenticated:
+        # Invalid token - reject connection
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid token")
+        return
     
     # Connect to the manager
-    info = await manager.connect(websocket, user_id)
+    info = await manager.connect(websocket, user_id or "anonymous", authenticated=authenticated)
     
-    # Send connection confirmation
+    # Send connection confirmation (matching bounty spec format)
     await websocket.send_json({
-        "event": "connected",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "type": "connected",
         "data": {
             "user_id": user_id,
             "message": "Connected to SolFoundry real-time updates",
-            "reconnected": reconnect
-        }
+            "authenticated": authenticated,
+            "channels": ["bounties", "prs", "payouts", "leaderboard"]
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat()
     })
     
-    # Auto-subscribe to user's personal channel
-    user_subscription = Subscription(
-        scope=SubscriptionScope.USER,
-        target_id=user_id
-    )
-    await manager.subscribe(websocket, user_subscription)
-    
-    logger.info(f"WebSocket client connected: user={user_id}, reconnect={reconnect}")
+    logger.info(f"WebSocket client connected: user={user_id}, authenticated={authenticated}")
     
     try:
         while True:
+            # Check rate limit
+            if not manager.check_rate_limit(websocket):
+                await send_error(
+                    websocket,
+                    error_code="RATE_LIMITED",
+                    error_message="Too many messages. Please slow down.",
+                    details={"remaining": manager.get_rate_limit_remaining(websocket)}
+                )
+                continue
+            
             # Receive and process messages from client
             data = await websocket.receive_text()
             message = await parse_client_message(data)
@@ -188,36 +243,30 @@ async def websocket_endpoint(
                 continue
             
             if isinstance(message, SubscribeMessage):
-                # Parse and validate scope
-                try:
-                    scope = SubscriptionScope(message.scope)
-                except ValueError:
+                # Parse subscription
+                parsed = manager.parse_subscription(message.channel)
+                
+                if not parsed:
                     await send_error(
                         websocket,
-                        error_code="INVALID_SCOPE",
-                        error_message=f"Invalid scope: {message.scope}",
-                        details={"valid_scopes": [s.value for s in SubscriptionScope]}
+                        error_code="INVALID_CHANNEL",
+                        error_message=f"Invalid channel: {message.channel}",
+                        details={"valid_channels": ["bounties", "prs", "payouts", "leaderboard", "bounty:ID"]}
                     )
                     continue
                 
-                # Create subscription
-                subscription = Subscription(
-                    scope=scope,
-                    target_id=message.target_id
-                )
+                channel_type, target_id = parsed
+                channel = message.channel.lower()
                 
                 # Subscribe
-                success = await manager.subscribe(websocket, subscription)
+                success = await manager.subscribe(websocket, channel)
                 if success:
                     await websocket.send_json({
-                        "event": "subscribed",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "data": {
-                            "scope": scope.value,
-                            "target_id": message.target_id
-                        }
+                        "type": "subscribed",
+                        "data": {"channel": channel},
+                        "timestamp": datetime.now(timezone.utc).isoformat()
                     })
-                    logger.debug(f"User {user_id} subscribed to {scope.value}:{message.target_id}")
+                    logger.debug(f"User {user_id} subscribed to {channel}")
                 else:
                     await send_error(
                         websocket,
@@ -226,30 +275,14 @@ async def websocket_endpoint(
                     )
             
             elif isinstance(message, UnsubscribeMessage):
-                try:
-                    scope = SubscriptionScope(message.scope)
-                except ValueError:
-                    await send_error(
-                        websocket,
-                        error_code="INVALID_SCOPE",
-                        error_message=f"Invalid scope: {message.scope}"
-                    )
-                    continue
+                channel = message.channel.lower()
                 
-                subscription = Subscription(
-                    scope=scope,
-                    target_id=message.target_id
-                )
-                
-                success = await manager.unsubscribe(websocket, subscription)
+                success = await manager.unsubscribe(websocket, channel)
                 if success:
                     await websocket.send_json({
-                        "event": "unsubscribed",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "data": {
-                            "scope": scope.value,
-                            "target_id": message.target_id
-                        }
+                        "type": "unsubscribed",
+                        "data": {"channel": channel},
+                        "timestamp": datetime.now(timezone.utc).isoformat()
                     })
             
             elif isinstance(message, PongMessage):
@@ -260,9 +293,9 @@ async def websocket_endpoint(
             elif isinstance(message, PingMessage):
                 # Respond to client ping
                 await websocket.send_json({
-                    "event": "pong",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "data": {}
+                    "type": "pong",
+                    "data": {},
+                    "timestamp": datetime.now(timezone.utc).isoformat()
                 })
                 
     except WebSocketDisconnect:
@@ -284,198 +317,142 @@ async def get_websocket_stats():
         - unique_users: Number of unique users connected
         - redis_enabled: Whether Redis pub/sub is enabled
         - subscriptions: Total number of active subscriptions
+        - channels: Active channels
     """
     return manager.get_stats()
 
 
 # Helper functions for other modules to broadcast events
-async def broadcast_pr_status(
-    repo_id: str,
-    pr_id: str,
-    status: str,
-    user_id: Optional[str] = None,
-    extra_data: Optional[dict] = None
+async def broadcast_bounty_event(
+    event_type: EventType,
+    bounty_id: int,
+    data: dict,
+    broadcast_all: bool = True
 ) -> int:
     """
-    Broadcast a PR status change event.
+    Broadcast a bounty event.
     
     Args:
-        repo_id: Repository ID
-        pr_id: Pull request ID
-        status: New status (pending, approved, merged, rejected)
-        user_id: Optional user ID for direct notification
-        extra_data: Additional event data
+        event_type: Type of bounty event
+        bounty_id: Bounty ID
+        data: Event data
+        broadcast_all: Also broadcast to "bounties" channel
         
     Returns:
         Number of clients notified
     """
-    data = {
-        "pr_id": pr_id,
-        "status": status,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        **(extra_data or {})
-    }
-    
     count = 0
     
-    # Broadcast to repo subscribers
+    # Broadcast to specific bounty channel
     count += await manager.broadcast_event(
-        event_type=EventType.PR_STATUS_CHANGED,
+        event_type=event_type,
         data=data,
-        scope=SubscriptionScope.REPO,
-        target_id=repo_id
+        channel=f"bounty:{bounty_id}"
+    )
+    
+    # Also broadcast to general bounties channel
+    if broadcast_all:
+        count += await manager.broadcast_event(
+            event_type=event_type,
+            data=data,
+            channel="bounties"
+        )
+    
+    return count
+
+
+async def broadcast_pr_event(
+    event_type: EventType,
+    pr_id: int,
+    data: dict,
+    user_id: Optional[str] = None
+) -> int:
+    """
+    Broadcast a PR event.
+    
+    Args:
+        event_type: Type of PR event
+        pr_id: PR ID
+        data: Event data
+        user_id: Optional user for direct notification
+        
+    Returns:
+        Number of clients notified
+    """
+    count = 0
+    
+    # Broadcast to PRs channel
+    count += await manager.broadcast_event(
+        event_type=event_type,
+        data=data,
+        channel="prs"
     )
     
     # Also send to specific user if provided
     if user_id:
         count += await manager.broadcast_to_user(
             user_id=user_id,
-            event_type=EventType.PR_STATUS_CHANGED,
+            event_type=event_type,
             data=data
         )
     
     return count
 
 
-async def broadcast_new_comment(
-    repo_id: str,
-    comment_id: str,
-    author_id: str,
-    content_preview: str,
-    user_id: Optional[str] = None,
-    extra_data: Optional[dict] = None
+async def broadcast_payout_event(
+    event_type: EventType,
+    payout_id: str,
+    data: dict,
+    user_id: Optional[str] = None
 ) -> int:
     """
-    Broadcast a new comment event.
+    Broadcast a payout event.
     
     Args:
-        repo_id: Repository ID
-        comment_id: Comment ID
-        author_id: Comment author ID
-        content_preview: First 100 chars of comment
-        user_id: Optional user ID for direct notification
-        extra_data: Additional event data
+        event_type: Type of payout event
+        payout_id: Payout ID
+        data: Event data
+        user_id: Optional user for direct notification
         
     Returns:
         Number of clients notified
     """
-    data = {
-        "comment_id": comment_id,
-        "author_id": author_id,
-        "content_preview": content_preview[:100],
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        **(extra_data or {})
-    }
-    
     count = 0
     
+    # Broadcast to payouts channel
     count += await manager.broadcast_event(
-        event_type=EventType.NEW_COMMENT,
+        event_type=event_type,
         data=data,
-        scope=SubscriptionScope.REPO,
-        target_id=repo_id
+        channel="payouts"
     )
     
+    # Also send to specific user if provided
     if user_id:
         count += await manager.broadcast_to_user(
             user_id=user_id,
-            event_type=EventType.NEW_COMMENT,
+            event_type=event_type,
             data=data
         )
     
     return count
 
 
-async def broadcast_review_complete(
-    repo_id: str,
-    pr_id: str,
-    reviewer_id: str,
-    result: str,
-    user_id: Optional[str] = None,
-    extra_data: Optional[dict] = None
+async def broadcast_leaderboard_event(
+    event_type: EventType,
+    data: dict
 ) -> int:
     """
-    Broadcast a review completion event.
+    Broadcast a leaderboard event.
     
     Args:
-        repo_id: Repository ID
-        pr_id: Pull request ID
-        reviewer_id: Reviewer user ID
-        result: Review result (approved, changes_requested, commented)
-        user_id: Optional user ID for direct notification
-        extra_data: Additional event data
+        event_type: Type of event
+        data: Event data
         
     Returns:
         Number of clients notified
     """
-    data = {
-        "pr_id": pr_id,
-        "reviewer_id": reviewer_id,
-        "result": result,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        **(extra_data or {})
-    }
-    
-    count = 0
-    
-    count += await manager.broadcast_event(
-        event_type=EventType.REVIEW_COMPLETE,
+    return await manager.broadcast_event(
+        event_type=event_type,
         data=data,
-        scope=SubscriptionScope.REPO,
-        target_id=repo_id
+        channel="leaderboard"
     )
-    
-    if user_id:
-        count += await manager.broadcast_to_user(
-            user_id=user_id,
-            event_type=EventType.REVIEW_COMPLETE,
-            data=data
-        )
-    
-    return count
-
-
-async def broadcast_payout_sent(
-    bounty_id: str,
-    user_id: str,
-    amount: float,
-    transaction_id: str,
-    extra_data: Optional[dict] = None
-) -> int:
-    """
-    Broadcast a payout notification.
-    
-    Args:
-        bounty_id: Bounty ID
-        user_id: Recipient user ID
-        amount: Payment amount in SOL
-        transaction_id: Solana transaction ID
-        extra_data: Additional event data
-        
-    Returns:
-        Number of clients notified
-    """
-    data = {
-        "bounty_id": bounty_id,
-        "amount": amount,
-        "transaction_id": transaction_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        **(extra_data or {})
-    }
-    
-    # Broadcast to bounty subscribers
-    count = await manager.broadcast_event(
-        event_type=EventType.PAYOUT_SENT,
-        data=data,
-        scope=SubscriptionScope.BOUNTY,
-        target_id=bounty_id
-    )
-    
-    # Also send directly to user
-    count += await manager.broadcast_to_user(
-        user_id=user_id,
-        event_type=EventType.PAYOUT_SENT,
-        data=data
-    )
-    
-    return count

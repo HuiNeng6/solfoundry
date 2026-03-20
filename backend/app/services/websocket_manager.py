@@ -1,26 +1,35 @@
 """WebSocket connection manager for real-time updates.
 
 This module provides WebSocket connection management with:
-- Per-user and per-repository subscriptions
+- Channel-based subscriptions (bounties, prs, payouts, leaderboard)
 - Redis pub/sub for distributed message broadcasting
 - Heartbeat/ping-pong for connection health
-- Automatic reconnection support
-- Event type filtering
+- JWT authentication
+- Per-connection rate limiting
+
+Channels:
+    - bounties: New/updated bounties
+    - prs: PR submission events
+    - payouts: Live payout feed
+    - leaderboard: Rank changes
 
 Usage:
     manager = ConnectionManager()
-    await manager.connect(websocket, user_id, subscriptions)
-    await manager.broadcast_event("pr_status", {"pr_id": 123}, user_id)
+    await manager.connect(websocket, user_id)
+    await manager.subscribe(websocket, "bounties")
+    await manager.broadcast_event("bounty_claimed", {"bounty_id": 42}, "bounties")
 """
 
 import os
 import json
 import asyncio
 import logging
-from typing import Dict, Set, Optional, Any
+import time
+from typing import Dict, Set, Optional, Any, List
 from datetime import datetime, timezone
 from enum import Enum
 from dataclasses import dataclass, field
+from collections import defaultdict
 
 from fastapi import WebSocket
 from pydantic import BaseModel, Field
@@ -35,46 +44,70 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+class Channel(str, Enum):
+    """WebSocket channels matching bounty spec."""
+    BOUNTIES = "bounties"      # New/updated bounties
+    PRS = "prs"                # PR submission events
+    PAYOUTS = "payouts"        # Live payout feed
+    LEADERBOARD = "leaderboard"  # Rank changes
+
+
 class EventType(str, Enum):
-    """Supported WebSocket event types."""
+    """Event types for WebSocket messages.
+    
+    Matches bounty spec: {"type": "bounty_claimed", "data": {...}, "timestamp": "..."}
+    """
+    # Bounty events
+    BOUNTY_CREATED = "bounty_created"
+    BOUNTY_UPDATED = "bounty_updated"
+    BOUNTY_CLAIMED = "bounty_claimed"
+    BOUNTY_ASSIGNED = "bounty_assigned"
+    
+    # PR events
+    PR_SUBMITTED = "pr_submitted"
     PR_STATUS_CHANGED = "pr_status_changed"
-    NEW_COMMENT = "new_comment"
-    REVIEW_COMPLETE = "review_complete"
-    PAYOUT_SENT = "payout_sent"
+    PR_REVIEWED = "pr_reviewed"
+    
+    # Payout events
+    PAYOUT_INITIATED = "payout_initiated"
+    PAYOUT_COMPLETED = "payout_completed"
+    
+    # Leaderboard events
+    LEADERBOARD_UPDATE = "leaderboard_update"
+    RANK_CHANGE = "rank_change"
+    
+    # System events
     HEARTBEAT = "heartbeat"
-    SUBSCRIPTION_UPDATE = "subscription_update"
+    CONNECTED = "connected"
+    SUBSCRIBED = "subscribed"
+    UNSUBSCRIBED = "unsubscribed"
     ERROR = "error"
 
 
-class SubscriptionScope(str, Enum):
-    """Subscription scopes for filtering events."""
-    USER = "user"       # Events specific to a user
-    REPO = "repo"       # Events specific to a repository
-    BOUNTY = "bounty"   # Events specific to a bounty
-    GLOBAL = "global"   # Global system events
-
-
 @dataclass
-class Subscription:
-    """Represents a client's subscription to event channels."""
-    scope: SubscriptionScope
-    target_id: str  # user_id, repo_id, or bounty_id
+class RateLimit:
+    """Rate limiting state for a connection."""
+    max_messages: int = 100  # Max messages per minute
+    window_seconds: int = 60
+    message_times: List[float] = field(default_factory=list)
     
-    def to_channel(self) -> str:
-        """Convert subscription to Redis channel name."""
-        return f"{self.scope.value}:{self.target_id}"
+    def is_allowed(self) -> bool:
+        """Check if message is allowed under rate limit."""
+        now = time.time()
+        # Remove old entries
+        self.message_times = [t for t in self.message_times if now - t < self.window_seconds]
+        
+        if len(self.message_times) >= self.max_messages:
+            return False
+        
+        self.message_times.append(now)
+        return True
     
-    @classmethod
-    def from_string(cls, s: str) -> Optional["Subscription"]:
-        """Parse subscription from string format 'scope:target_id'."""
-        parts = s.split(":", 1)
-        if len(parts) != 2:
-            return None
-        try:
-            scope = SubscriptionScope(parts[0])
-            return cls(scope=scope, target_id=parts[1])
-        except ValueError:
-            return None
+    def remaining(self) -> int:
+        """Get remaining messages in current window."""
+        now = time.time()
+        self.message_times = [t for t in self.message_times if now - t < self.window_seconds]
+        return max(0, self.max_messages - len(self.message_times))
 
 
 @dataclass
@@ -82,34 +115,38 @@ class ConnectionInfo:
     """Information about an active WebSocket connection."""
     websocket: WebSocket
     user_id: str
-    subscriptions: Set[Subscription] = field(default_factory=set)
+    subscriptions: Set[str] = field(default_factory=set)  # Channel names like "bounties", "bounty:42"
+    rate_limit: RateLimit = field(default_factory=RateLimit)
     last_ping: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     last_pong: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     is_alive: bool = True
+    authenticated: bool = False
 
 
 class WebSocketMessage(BaseModel):
-    """Standard WebSocket message format."""
-    event: EventType
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    """Standard WebSocket message format matching bounty spec.
+    
+    Format: {"type": "event_type", "data": {...}, "timestamp": "..."}
+    """
+    type: EventType
     data: Dict[str, Any] = Field(default_factory=dict)
-    subscription: Optional[str] = None  # Channel this message came from
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class HeartbeatMessage(BaseModel):
     """Heartbeat message for connection health."""
-    event: EventType = EventType.HEARTBEAT
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    type: EventType = EventType.HEARTBEAT
     ping_id: str
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ErrorMessage(BaseModel):
     """Error message format."""
-    event: EventType = EventType.ERROR
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    type: EventType = EventType.ERROR
     error_code: str
     error_message: str
     details: Optional[Dict[str, Any]] = None
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ConnectionManager:
@@ -118,30 +155,36 @@ class ConnectionManager:
     
     Features:
     - Per-user connection tracking
-    - Subscription management (user, repo, bounty scopes)
+    - Channel-based subscriptions (bounties, prs, payouts, leaderboard)
+    - Specific bounty subscription: {"subscribe": "bounty:42"}
     - Redis pub/sub for distributed deployments
+    - JWT authentication
+    - Per-connection rate limiting
     - Automatic heartbeat/ping-pong
-    - Graceful reconnection support
     
     Example:
         manager = ConnectionManager()
         
         # In WebSocket endpoint
         await manager.connect(websocket, user_id="user_123")
-        await manager.subscribe(websocket, Subscription(SubscriptionScope.REPO, "repo_456"))
+        await manager.subscribe(websocket, "bounties")
+        await manager.subscribe(websocket, "bounty:42")  # Specific bounty
         
         # Broadcast event
         await manager.broadcast_event(
-            event_type=EventType.PR_STATUS_CHANGED,
-            data={"pr_id": "pr_789", "status": "merged"},
-            scope=SubscriptionScope.REPO,
-            target_id="repo_456"
+            event_type=EventType.BOUNTY_CLAIMED,
+            data={"bounty_id": 42, "user_id": "user_456"},
+            channel="bounties"
         )
     """
     
     # Heartbeat configuration
     HEARTBEAT_INTERVAL = 30  # seconds
     HEARTBEAT_TIMEOUT = 10   # seconds to wait for pong
+    
+    # Rate limiting defaults
+    DEFAULT_RATE_LIMIT = 100  # messages per minute
+    DEFAULT_RATE_WINDOW = 60  # seconds
     
     def __init__(self, redis_url: Optional[str] = None):
         """
@@ -159,6 +202,9 @@ class ConnectionManager:
         
         # WebSocket to ConnectionInfo mapping
         self._ws_to_info: Dict[WebSocket, ConnectionInfo] = {}
+        
+        # Channel to subscribers mapping
+        self._channel_subscribers: Dict[str, Set[WebSocket]] = defaultdict(set)
         
         # Redis client (optional)
         self._redis: Optional[redis.Redis] = None
@@ -220,22 +266,32 @@ class ConnectionManager:
         self._connections.clear()
         self._ws_to_user.clear()
         self._ws_to_info.clear()
+        self._channel_subscribers.clear()
         logger.info("WebSocket manager shutdown complete")
     
-    async def connect(self, websocket: WebSocket, user_id: str) -> ConnectionInfo:
+    async def connect(self, websocket: WebSocket, user_id: str, authenticated: bool = False) -> ConnectionInfo:
         """
         Accept a new WebSocket connection.
         
         Args:
             websocket: The WebSocket connection
             user_id: The authenticated user's ID
+            authenticated: Whether the user has been authenticated via JWT
             
         Returns:
             ConnectionInfo for the new connection
         """
         await websocket.accept()
         
-        info = ConnectionInfo(websocket=websocket, user_id=user_id)
+        info = ConnectionInfo(
+            websocket=websocket, 
+            user_id=user_id,
+            authenticated=authenticated,
+            rate_limit=RateLimit(
+                max_messages=self.DEFAULT_RATE_LIMIT,
+                window_seconds=self.DEFAULT_RATE_WINDOW
+            )
+        )
         
         # Add to connections
         if user_id not in self._connections:
@@ -246,7 +302,7 @@ class ConnectionManager:
         self._ws_to_user[websocket] = user_id
         self._ws_to_info[websocket] = info
         
-        logger.info(f"WebSocket connected: user={user_id}, total_connections={len(self._ws_to_user)}")
+        logger.info(f"WebSocket connected: user={user_id}, authenticated={authenticated}, total_connections={len(self._ws_to_user)}")
         
         return info
     
@@ -266,28 +322,49 @@ class ConnectionManager:
                 if not self._connections[user_id]:
                     del self._connections[user_id]
             
+            # Remove from all channel subscriptions
+            for channel in info.subscriptions:
+                self._channel_subscribers[channel].discard(websocket)
+            
             # Unsubscribe from Redis channels
             if self._redis:
-                for sub in info.subscriptions:
+                for channel in info.subscriptions:
                     try:
-                        channel = sub.to_channel()
                         await self._pubsub.unsubscribe(channel)
                     except Exception as e:
                         logger.warning(f"Failed to unsubscribe from {channel}: {e}")
         
         logger.info(f"WebSocket disconnected: user={user_id}, remaining={len(self._ws_to_user)}")
     
-    async def subscribe(
-        self, 
-        websocket: WebSocket, 
-        subscription: Subscription
-    ) -> bool:
+    def check_rate_limit(self, websocket: WebSocket) -> bool:
         """
-        Subscribe a connection to an event channel.
+        Check if a message is allowed under rate limiting.
         
         Args:
             websocket: The WebSocket connection
-            subscription: The subscription to add
+            
+        Returns:
+            True if message is allowed, False if rate limited
+        """
+        info = self._ws_to_info.get(websocket)
+        if not info:
+            return False
+        return info.rate_limit.is_allowed()
+    
+    def get_rate_limit_remaining(self, websocket: WebSocket) -> int:
+        """Get remaining messages for rate limit."""
+        info = self._ws_to_info.get(websocket)
+        if not info:
+            return 0
+        return info.rate_limit.remaining()
+    
+    async def subscribe(self, websocket: WebSocket, channel: str) -> bool:
+        """
+        Subscribe a connection to a channel.
+        
+        Args:
+            websocket: The WebSocket connection
+            channel: Channel name (e.g., "bounties", "bounty:42")
             
         Returns:
             True if subscription was added, False if connection not found
@@ -296,12 +373,12 @@ class ConnectionManager:
         if not info:
             return False
         
-        info.subscriptions.add(subscription)
+        info.subscriptions.add(channel)
+        self._channel_subscribers[channel].add(websocket)
         
         # Subscribe to Redis channel if available
         if self._redis:
             try:
-                channel = subscription.to_channel()
                 await self._pubsub.subscribe(channel)
                 logger.debug(f"Subscribed to Redis channel: {channel}")
             except Exception as e:
@@ -309,17 +386,13 @@ class ConnectionManager:
         
         return True
     
-    async def unsubscribe(
-        self, 
-        websocket: WebSocket, 
-        subscription: Subscription
-    ) -> bool:
+    async def unsubscribe(self, websocket: WebSocket, channel: str) -> bool:
         """
-        Unsubscribe a connection from an event channel.
+        Unsubscribe a connection from a channel.
         
         Args:
             websocket: The WebSocket connection
-            subscription: The subscription to remove
+            channel: Channel name
             
         Returns:
             True if subscription was removed, False if not found
@@ -328,24 +401,52 @@ class ConnectionManager:
         if not info:
             return False
         
-        if subscription in info.subscriptions:
-            info.subscriptions.remove(subscription)
+        if channel in info.subscriptions:
+            info.subscriptions.remove(channel)
+            self._channel_subscribers[channel].discard(websocket)
             
             # Unsubscribe from Redis if no other connections need it
-            if self._redis:
-                channel = subscription.to_channel()
-                other_connections_need = any(
-                    subscription in other_info.subscriptions
-                    for other_info in self._ws_to_info.values()
-                    if other_info != info
-                )
-                if not other_connections_need:
-                    try:
-                        await self._pubsub.unsubscribe(channel)
-                    except Exception as e:
-                        logger.warning(f"Failed to unsubscribe from Redis: {e}")
+            if self._redis and channel not in self._channel_subscribers:
+                try:
+                    await self._pubsub.unsubscribe(channel)
+                except Exception as e:
+                    logger.warning(f"Failed to unsubscribe from Redis: {e}")
         
         return True
+    
+    def parse_subscription(self, subscription_str: str) -> Optional[tuple]:
+        """
+        Parse subscription string like "bounty:42" or "bounties".
+        
+        Returns:
+            Tuple of (channel_type, target_id) or None if invalid
+        """
+        parts = subscription_str.split(":", 1)
+        
+        if len(parts) == 1:
+            # Simple channel like "bounties"
+            channel = parts[0].lower()
+            try:
+                Channel(channel)
+                return (channel, None)
+            except ValueError:
+                return None
+        else:
+            # Specific subscription like "bounty:42"
+            channel_type = parts[0].lower()
+            target_id = parts[1]
+            
+            # Validate channel type
+            valid_prefixes = ["bounty", "pr", "user"]
+            if channel_type in valid_prefixes:
+                return (channel_type, target_id)
+            
+            # Also accept main channels
+            try:
+                Channel(channel_type)
+                return (channel_type, target_id)
+            except ValueError:
+                return None
     
     async def send_personal_message(
         self, 
@@ -364,7 +465,7 @@ class ConnectionManager:
         Returns:
             True if sent successfully, False otherwise
         """
-        message = WebSocketMessage(event=event_type, data=data)
+        message = WebSocketMessage(type=event_type, data=data)
         try:
             await websocket.send_json(message.model_dump(mode="json"))
             return True
@@ -392,7 +493,7 @@ class ConnectionManager:
             Number of connections the message was sent to
         """
         connections = self._connections.get(user_id, set())
-        message = WebSocketMessage(event=event_type, data=data)
+        message = WebSocketMessage(type=event_type, data=data)
         
         sent_count = 0
         for info in connections:
@@ -411,57 +512,51 @@ class ConnectionManager:
         self,
         event_type: EventType,
         data: Dict[str, Any],
-        scope: SubscriptionScope,
-        target_id: str,
+        channel: str,
         exclude: Optional[WebSocket] = None
     ) -> int:
         """
         Broadcast an event to all subscribers of a channel.
         
         Args:
-            event_type: Type of event (PR status, comment, etc.)
+            event_type: Type of event
             data: Event payload
-            scope: Subscription scope (user, repo, bounty)
-            target_id: Target ID for the scope
+            channel: Channel name (e.g., "bounties", "bounty:42")
             exclude: Optional WebSocket to exclude
             
         Returns:
             Number of connections the message was sent to
         """
-        subscription = Subscription(scope=scope, target_id=target_id)
-        channel = subscription.to_channel()
-        
-        message = WebSocketMessage(
-            event=event_type, 
-            data=data, 
-            subscription=channel
-        )
+        message = WebSocketMessage(type=event_type, data=data)
         
         # Publish to Redis for distributed delivery
         if self._redis:
             try:
                 await self._redis.publish(
-                    "websocket_events",
-                    json.dumps({
-                        "channel": channel,
-                        "message": message.model_dump(mode="json")
-                    })
+                    channel,
+                    json.dumps(message.model_dump(mode="json"))
                 )
             except Exception as e:
                 logger.warning(f"Failed to publish to Redis: {e}")
         
         # Send to local subscribers
         sent_count = 0
-        for info in self._ws_to_info.values():
-            if exclude and info.websocket == exclude:
+        subscribers = self._channel_subscribers.get(channel, set())
+        
+        for websocket in subscribers:
+            if exclude and websocket == exclude:
                 continue
-            if subscription in info.subscriptions:
-                try:
-                    await info.websocket.send_json(message.model_dump(mode="json"))
-                    sent_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to send to subscriber: {e}")
-                    info.is_alive = False
+            
+            info = self._ws_to_info.get(websocket)
+            if not info or not info.is_alive:
+                continue
+                
+            try:
+                await websocket.send_json(message.model_dump(mode="json"))
+                sent_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to send to subscriber: {e}")
+                info.is_alive = False
         
         return sent_count
     
@@ -476,20 +571,16 @@ class ConnectionManager:
                     continue
                 
                 try:
-                    data = json.loads(message["data"])
-                    channel = data.get("channel", "")
-                    msg = data.get("message", {})
-                    
-                    # Parse subscription from channel
-                    subscription = Subscription.from_string(channel)
-                    if not subscription:
-                        continue
+                    channel = message.get("channel", "")
+                    msg_data = json.loads(message["data"])
                     
                     # Forward to local subscribers
-                    for info in self._ws_to_info.values():
-                        if subscription in info.subscriptions:
+                    subscribers = self._channel_subscribers.get(channel, set())
+                    for websocket in subscribers:
+                        info = self._ws_to_info.get(websocket)
+                        if info and info.is_alive:
                             try:
-                                await info.websocket.send_json(msg)
+                                await websocket.send_json(msg_data)
                             except Exception:
                                 info.is_alive = False
                                 
@@ -568,7 +659,8 @@ class ConnectionManager:
             "redis_enabled": self._redis is not None,
             "subscriptions": sum(
                 len(info.subscriptions) for info in self._ws_to_info.values()
-            )
+            ),
+            "channels": list(self._channel_subscribers.keys())
         }
 
 
