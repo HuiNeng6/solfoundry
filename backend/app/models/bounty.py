@@ -5,7 +5,7 @@ Covers: create, read, update, delete, solution submission, and claim lifecycle.
 
 import re
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
