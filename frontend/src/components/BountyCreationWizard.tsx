@@ -14,6 +14,79 @@ interface BountyFormData {
   deadline: string;
 }
 
+// Validation function for draft data from localStorage
+function isValidBountyFormData(data: unknown): data is BountyFormData {
+  if (typeof data !== 'object' || data === null) return false;
+  
+  const d = data as Record<string, unknown>;
+  
+  // Validate tier
+  if (d.tier !== undefined && !['T1', 'T2', 'T3', ''].includes(d.tier as string)) {
+    return false;
+  }
+  
+  // Validate strings
+  if (d.title !== undefined && typeof d.title !== 'string') return false;
+  if (d.description !== undefined && typeof d.description !== 'string') return false;
+  if (d.category !== undefined && typeof d.category !== 'string') return false;
+  if (d.deadline !== undefined && typeof d.deadline !== 'string') return false;
+  
+  // Validate arrays
+  if (d.requirements !== undefined) {
+    if (!Array.isArray(d.requirements)) return false;
+    if (!d.requirements.every((r: unknown) => typeof r === 'string')) return false;
+  }
+  
+  if (d.skills !== undefined) {
+    if (!Array.isArray(d.skills)) return false;
+    if (!d.skills.every((s: unknown) => typeof s === 'string')) return false;
+  }
+  
+  // Validate rewardAmount
+  if (d.rewardAmount !== undefined && typeof d.rewardAmount !== 'number') return false;
+  
+  return true;
+}
+
+// Simple markdown to HTML converter (safe subset)
+function renderMarkdown(text: string): string {
+  if (!text) return '';
+  
+  let html = text
+    // Escape HTML to prevent XSS
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    // Headers
+    .replace(/^### (.*$)/gim, '<h3 class="text-lg font-bold text-white mt-4 mb-2">$1</h3>')
+    .replace(/^## (.*$)/gim, '<h2 class="text-xl font-bold text-white mt-4 mb-2">$1</h2>')
+    .replace(/^# (.*$)/gim, '<h1 class="text-2xl font-bold text-white mt-4 mb-2">$1</h1>')
+    // Bold
+    .replace(/\*\*(.*?)\*\*/g, '<strong class="font-bold">$1</strong>')
+    // Italic
+    .replace(/\*(.*?)\*/g, '<em class="italic">$1</em>')
+    // Code blocks
+    .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="bg-gray-900 p-3 rounded-lg overflow-x-auto my-2"><code class="text-green-400">$2</code></pre>')
+    // Inline code
+    .replace(/`([^`]+)`/g, '<code class="bg-gray-900 px-1.5 py-0.5 rounded text-purple-400 text-sm">$1</code>')
+    // Links
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-purple-400 hover:text-purple-300 underline" target="_blank" rel="noopener noreferrer">$1</a>')
+    // Lists
+    .replace(/^\s*[-*]\s+(.*)$/gim, '<li class="ml-4 list-disc">$1</li>')
+    // Line breaks
+    .replace(/\n\n/g, '</p><p class="my-2">')
+    .replace(/\n/g, '<br/>');
+  
+  return `<div class="prose prose-invert prose-sm max-w-none"><p class="my-2">${html}</p></div>`;
+}
+
+// Auth context types (would be provided by actual auth implementation)
+interface AuthState {
+  isGithubAuthenticated: boolean;
+  isWalletConnected: boolean;
+  walletBalance: number;
+}
+
 interface StepProps {
   formData: BountyFormData;
   updateFormData: (updates: Partial<BountyFormData>) => void;
@@ -70,7 +143,7 @@ const TIER_INFO = {
   T2: {
     name: 'Tier 2 - Open Race (Gated)',
     description: 'Requires 4+ merged T1 bounties.',
-    rules: ['Open race after unlock', '7 days deadline', 'Min score: 6.0/10', 'Gated access'],
+    rules: ['Open race after unlock', '7 days deadline', 'Min score: 7/10', 'Gated access'],
     color: 'text-yellow-400',
     borderColor: 'border-yellow-500',
   },
@@ -171,9 +244,14 @@ const TitleDescription: React.FC<StepProps> = ({ formData, updateFormData, error
           </div>
           
           {showPreview ? (
-            <div className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 min-h-[200px] text-gray-300 prose prose-invert prose-sm max-w-none">
-              {formData.description || 'No description yet...'}
-            </div>
+            <div 
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 min-h-[200px] text-gray-300 prose prose-invert prose-sm max-w-none"
+              dangerouslySetInnerHTML={{ 
+                __html: formData.description 
+                  ? renderMarkdown(formData.description) 
+                  : '<p class="text-gray-500 italic">No description yet...</p>' 
+              }}
+            />
           ) : (
             <textarea
               value={formData.description}
@@ -430,9 +508,14 @@ const PreviewBounty: React.FC<StepProps> = ({ formData }) => {
         {/* Description */}
         <div>
           <h4 className="text-sm font-bold text-gray-400 uppercase mb-2">Description</h4>
-          <div className="text-gray-300 prose prose-invert prose-sm max-w-none">
-            {formData.description || 'No description provided.'}
-          </div>
+          <div 
+            className="text-gray-300 prose prose-invert prose-sm max-w-none"
+            dangerouslySetInnerHTML={{ 
+              __html: formData.description 
+                ? renderMarkdown(formData.description) 
+                : '<p class="text-gray-500 italic">No description provided.</p>' 
+            }}
+          />
         </div>
         
         {/* Requirements */}
@@ -467,14 +550,76 @@ const PreviewBounty: React.FC<StepProps> = ({ formData }) => {
 };
 
 // Step 7: Confirm & Publish
-const ConfirmPublish: React.FC<StepProps> = ({ formData }) => {
+interface ConfirmPublishProps extends StepProps {
+  onPublish: () => Promise<void>;
+  authState: AuthState;
+}
+
+const ConfirmPublish: React.FC<ConfirmPublishProps> = ({ formData, onPublish, authState }) => {
   const [agreed, setAgreed] = useState(false);
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  
+  const { isGithubAuthenticated, isWalletConnected, walletBalance } = authState;
+  const hasSufficientBalance = walletBalance >= formData.rewardAmount;
+  const canPublish = agreed && isGithubAuthenticated && isWalletConnected && hasSufficientBalance;
+  
+  const handlePublish = async () => {
+    if (!canPublish) return;
+    
+    setIsPublishing(true);
+    setError(null);
+    
+    try {
+      await onPublish();
+      setSuccess(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to publish bounty');
+    } finally {
+      setIsPublishing(false);
+    }
+  };
+  
+  if (success) {
+    return (
+      <div className="space-y-6 text-center">
+        <div className="text-green-400 text-6xl mb-4">✓</div>
+        <h2 className="text-2xl font-bold text-white">Bounty Published!</h2>
+        <p className="text-gray-400">Your bounty has been created successfully.</p>
+      </div>
+    );
+  }
   
   return (
     <div className="space-y-6">
       <h2 className="text-xl font-bold text-white">Confirm & Publish</h2>
       <p className="text-gray-400">Final step — publish your bounty to GitHub.</p>
       
+      {/* Auth Status */}
+      <div className="bg-gray-800 rounded-lg p-4 space-y-3">
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-gray-400">GitHub Authentication</span>
+          <span className={isGithubAuthenticated ? 'text-green-400' : 'text-red-400'}>
+            {isGithubAuthenticated ? '✓ Connected' : '✗ Not connected'}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-gray-400">Wallet Connection</span>
+          <span className={isWalletConnected ? 'text-green-400' : 'text-red-400'}>
+            {isWalletConnected ? '✓ Connected' : '✗ Not connected'}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-gray-400">Wallet Balance</span>
+          <span className={hasSufficientBalance ? 'text-green-400' : 'text-red-400'}>
+            {walletBalance.toLocaleString()} $FNDRY
+            {!hasSufficientBalance && ` (Need ${formData.rewardAmount.toLocaleString()})`}
+          </span>
+        </div>
+      </div>
+      
+      {/* Summary */}
       <div className="bg-gray-800 rounded-lg p-4 space-y-3">
         <div className="flex items-center justify-between text-sm">
           <span className="text-gray-400">Bounty Tier</span>
@@ -498,6 +643,13 @@ const ConfirmPublish: React.FC<StepProps> = ({ formData }) => {
         </div>
       </div>
       
+      {/* Error Message */}
+      {error && (
+        <div className="bg-red-900/50 border border-red-500 rounded-lg p-4 text-red-400 text-sm">
+          {error}
+        </div>
+      )}
+      
       <label className="flex items-start gap-3 cursor-pointer">
         <input
           type="checkbox"
@@ -512,22 +664,56 @@ const ConfirmPublish: React.FC<StepProps> = ({ formData }) => {
       </label>
       
       <button
-        disabled={!agreed}
+        onClick={handlePublish}
+        disabled={!canPublish || isPublishing}
         className="w-full py-3 rounded-lg font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-purple-600 to-green-500 text-white hover:from-purple-500 hover:to-green-400"
       >
-        Publish Bounty
+        {isPublishing ? 'Publishing...' : 'Publish Bounty'}
       </button>
+      
+      {!isGithubAuthenticated && (
+        <p className="text-yellow-400 text-sm text-center">
+          Please connect your GitHub account to publish.
+        </p>
+      )}
+      {!isWalletConnected && isGithubAuthenticated && (
+        <p className="text-yellow-400 text-sm text-center">
+          Please connect your wallet to publish.
+        </p>
+      )}
+      {!hasSufficientBalance && isWalletConnected && (
+        <p className="text-yellow-400 text-sm text-center">
+          Insufficient balance. Need {(formData.rewardAmount - walletBalance).toLocaleString()} more $FNDRY.
+        </p>
+      )}
     </div>
   );
 };
 
 // Main Wizard Component
-export const BountyCreationWizard: React.FC = () => {
+interface BountyCreationWizardProps {
+  // Optional auth state provider (would normally come from context)
+  authState?: AuthState;
+  onPublishBounty?: (formData: BountyFormData) => Promise<void>;
+}
+
+export const BountyCreationWizard: React.FC<BountyCreationWizardProps> = ({ 
+  authState: externalAuthState,
+  onPublishBounty 
+}) => {
   const [currentStep, setCurrentStep] = useState(1);
   const [formData, setFormData] = useState<BountyFormData>(initialFormData);
   const [errors, setErrors] = useState<Record<string, string>>({});
   
+  // Default auth state (would normally come from auth context/hook)
+  const [authState] = useState<AuthState>(externalAuthState || {
+    isGithubAuthenticated: false,
+    isWalletConnected: false,
+    walletBalance: 0,
+  });
+  
   const totalSteps = 7;
+  const progressPercent = (currentStep / totalSteps) * 100;
   const stepTitles = [
     'Select Tier',
     'Title & Description',
@@ -544,10 +730,25 @@ export const BountyCreationWizard: React.FC = () => {
       const saved = localStorage.getItem(DRAFT_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        setFormData(parsed);
+        // Validate the parsed data before using it
+        if (isValidBountyFormData(parsed)) {
+          // Merge with defaults to ensure all fields exist
+          setFormData({
+            ...initialFormData,
+            ...parsed,
+            // Ensure requirements always has at least one item
+            requirements: Array.isArray(parsed.requirements) && parsed.requirements.length > 0 
+              ? parsed.requirements 
+              : [''],
+          });
+        } else {
+          console.warn('Invalid draft data found, ignoring');
+          localStorage.removeItem(DRAFT_KEY);
+        }
       }
     } catch (e) {
       console.error('Failed to load draft:', e);
+      localStorage.removeItem(DRAFT_KEY);
     }
   }, []);
   
@@ -586,8 +787,22 @@ export const BountyCreationWizard: React.FC = () => {
         if (formData.skills.length === 0) newErrors.skills = 'Select at least one skill';
         break;
       case 5:
+        // Base validation
         if (formData.rewardAmount < 1000) newErrors.rewardAmount = 'Minimum reward is 1,000 $FNDRY';
         if (!formData.deadline) newErrors.deadline = 'Please set a deadline';
+        
+        // Tier 2 specific validation
+        if (formData.tier === 'T2') {
+          if (formData.rewardAmount < 500000) {
+            newErrors.rewardAmount = 'Tier 2 requires minimum reward of 500,000 $FNDRY';
+          }
+          const deadlineDate = new Date(formData.deadline);
+          const minDeadline = new Date();
+          minDeadline.setDate(minDeadline.getDate() + 7);
+          if (deadlineDate < minDeadline) {
+            newErrors.deadline = 'Tier 2 requires at least 7 days deadline';
+          }
+        }
         break;
     }
     
@@ -605,6 +820,17 @@ export const BountyCreationWizard: React.FC = () => {
     setCurrentStep((s) => Math.max(s - 1, 1));
   };
   
+  const handlePublish = async () => {
+    if (onPublishBounty) {
+      await onPublishBounty(formData);
+    } else {
+      // Default publish behavior - would integrate with GitHub API
+      console.log('Publishing bounty:', formData);
+      // Simulate API call
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  };
+  
   const renderStep = () => {
     const props: StepProps = { formData, updateFormData, errors };
     
@@ -615,7 +841,13 @@ export const BountyCreationWizard: React.FC = () => {
       case 4: return <CategorySkills {...props} />;
       case 5: return <RewardDeadline {...props} />;
       case 6: return <PreviewBounty {...props} />;
-      case 7: return <ConfirmPublish {...props} />;
+      case 7: return (
+        <ConfirmPublish 
+          {...props} 
+          onPublish={handlePublish}
+          authState={authState}
+        />
+      );
       default: return null;
     }
   };
@@ -628,10 +860,17 @@ export const BountyCreationWizard: React.FC = () => {
           <h1 className="text-2xl font-bold text-white">Create Bounty</h1>
           <span className="text-gray-400 text-sm">Step {currentStep} of {totalSteps}</span>
         </div>
-        <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+        <div 
+          className="h-2 bg-gray-800 rounded-full overflow-hidden"
+          role="progressbar"
+          aria-valuenow={progressPercent}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`Step ${currentStep} of ${totalSteps}`}
+        >
           <div
             className="h-full bg-gradient-to-r from-purple-600 to-green-500 transition-all duration-300"
-            style={{ width: `${(currentStep / totalSteps) * 100}%` }}
+            style={{ width: `${progressPercent}%` }}
           />
         </div>
         <div className="flex justify-between mt-2">
