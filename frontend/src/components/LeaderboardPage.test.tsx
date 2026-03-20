@@ -255,4 +255,140 @@ describe('LeaderboardPage', () => {
       expect(screen.getByText(medal)).toBeInTheDocument();
     });
   });
+
+  // Time period filter test
+  it('filters by time period', () => {
+    const onFilterChange = jest.fn();
+    render(<LeaderboardPage data={mockData} onFilterChange={onFilterChange} />);
+    const timeSelect = screen.getByLabelText('Time Period');
+    fireEvent.change(timeSelect, { target: { value: 'week' } });
+    expect(onFilterChange).toHaveBeenCalledWith(
+      expect.objectContaining({ timePeriod: 'week' })
+    );
+  });
+
+  // Pagination navigation tests
+  it('calls onPageChange when page changes', () => {
+    const onPageChange = jest.fn();
+    const manyItems = Array.from({ length: 15 }, (_, i) => ({
+      id: `user-${i + 1}`,
+      rank: i + 1,
+      username: `user${i + 1}`,
+      avatarUrl: undefined,
+      totalEarned: 100000 * (15 - i),
+      bountiesCompleted: 10 - i,
+      reputationScore: 90 - i,
+      categories: ['Frontend'],
+    }));
+    render(<LeaderboardPage data={manyItems} onPageChange={onPageChange} />);
+    const nextButton = screen.getByText('Next');
+    fireEvent.click(nextButton);
+    expect(onPageChange).toHaveBeenCalledWith(2);
+  });
+
+  it('disables previous button on first page', () => {
+    const manyItems = Array.from({ length: 15 }, (_, i) => ({
+      id: `user-${i + 1}`,
+      rank: i + 1,
+      username: `user${i + 1}`,
+      avatarUrl: undefined,
+      totalEarned: 100000 * (15 - i),
+      bountiesCompleted: 10 - i,
+      reputationScore: 90 - i,
+      categories: ['Frontend'],
+    }));
+    render(<LeaderboardPage data={manyItems} />);
+    const prevButton = screen.getByText('Previous');
+    expect(prevButton).toBeDisabled();
+  });
+
+  it('disables next button on last page', () => {
+    const manyItems = Array.from({ length: 15 }, (_, i) => ({
+      id: `user-${i + 1}`,
+      rank: i + 1,
+      username: `user${i + 1}`,
+      avatarUrl: undefined,
+      totalEarned: 100000 * (15 - i),
+      bountiesCompleted: 10 - i,
+      reputationScore: 90 - i,
+      categories: ['Frontend'],
+    }));
+    render(<LeaderboardPage data={manyItems} />);
+    const nextButton = screen.getByText('Next');
+    fireEvent.click(nextButton); // Go to page 2 (last page with 15 items)
+    expect(nextButton).toBeDisabled();
+  });
+
+  // Edge cases
+  it('handles empty data array', () => {
+    render(<LeaderboardPage data={[]} />);
+    expect(screen.getByText('No contributors found')).toBeInTheDocument();
+  });
+
+  it('handles single item data', () => {
+    render(<LeaderboardPage data={mockData.slice(0, 1)} />);
+    expect(screen.getByText('🥇')).toBeInTheDocument();
+    expect(screen.queryByText('🥈')).not.toBeInTheDocument();
+  });
+
+  it('handles two items data', () => {
+    render(<LeaderboardPage data={mockData.slice(0, 2)} />);
+    expect(screen.getByText('🥇')).toBeInTheDocument();
+    expect(screen.getByText('🥈')).toBeInTheDocument();
+    expect(screen.queryByText('🥉')).not.toBeInTheDocument();
+  });
+
+  // Default props test
+  it('renders with default props (no data prop)', () => {
+    render(<LeaderboardPage />);
+    // Should render with MOCK_DATA
+    expect(screen.getByText('Leaderboard')).toBeInTheDocument();
+  });
+
+  // Accessibility tests
+  it('has accessible filter labels', () => {
+    render(<LeaderboardPage data={mockData} />);
+    expect(screen.getByLabelText('Time Period')).toBeInTheDocument();
+    expect(screen.getByLabelText('Category')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Search users...')).toBeInTheDocument();
+  });
+
+  // Category tags in top 3 cards
+  it('renders category tags in top 3 cards', () => {
+    render(<LeaderboardPage data={mockData} />);
+    // First user has Frontend and Smart Contracts
+    expect(screen.getByText('Frontend')).toBeInTheDocument();
+    expect(screen.getByText('Smart Contracts')).toBeInTheDocument();
+  });
+
+  // Current user not in top 3
+  it('shows current user rank when not in top 3', () => {
+    render(<LeaderboardPage data={mockData} currentUserId="user-4" />);
+    expect(screen.getByText('Your Rank:')).toBeInTheDocument();
+    expect(screen.getByText('#4')).toBeInTheDocument();
+  });
+
+  // Current user not in data
+  it('does not show rank when current user not in data', () => {
+    render(<LeaderboardPage data={mockData} currentUserId="nonexistent-user" />);
+    expect(screen.queryByText('Your Rank:')).not.toBeInTheDocument();
+  });
+
+  // Reset filters button functionality
+  it('reset filters button clears all filters', () => {
+    render(<LeaderboardPage data={mockData} />);
+    // Apply filters
+    const searchInput = screen.getByPlaceholderText('Search users...');
+    const categorySelect = screen.getByLabelText('Category');
+    
+    fireEvent.change(searchInput, { target: { value: 'nonexistent' } });
+    fireEvent.change(categorySelect, { target: { value: 'Security' } });
+    
+    // Click reset
+    const resetButton = screen.getByText('Reset Filters');
+    fireEvent.click(resetButton);
+    
+    // Check that data is visible again
+    expect(screen.getByText('solmaster')).toBeInTheDocument();
+  });
 });
