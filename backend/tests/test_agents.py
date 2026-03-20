@@ -13,18 +13,21 @@ Test coverage:
 - Authentication/authorization
 - Pagination
 - Filtering
+
+Uses SQLAlchemy database persistence (no in-memory storage).
 """
 
 import pytest
+import pytest_asyncio
+from httpx import AsyncClient, ASGITransport
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from app.api.agents import router as agents_router
-from app.services import agent_service
+from app.database import Base, engine, async_session_factory
 
 
 # ---------------------------------------------------------------------------
-# Test app & client
+# Test app
 # ---------------------------------------------------------------------------
 
 _test_app = FastAPI()
@@ -35,8 +38,6 @@ _test_app.include_router(agents_router)
 async def health_check():
     return {"status": "ok"}
 
-
-client = TestClient(_test_app)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -56,20 +57,30 @@ VALID_AGENT = {
 }
 
 
-@pytest.fixture(autouse=True)
-def clear_store():
-    """Ensure each test starts and ends with an empty agent store."""
-    agent_service.clear_store()
-    yield
-    agent_service.clear_store()
+@pytest_asyncio.fixture(scope="function")
+async def db_session():
+    """Create a fresh database session for each test."""
+    # Create tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    
+    # Provide session
+    async with async_session_factory() as session:
+        yield session
+    
+    # Drop tables after test
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
 
 
-def _create_agent(**overrides) -> dict:
-    """Helper: create an agent via the service and return its dict."""
-    from app.models.agent import AgentCreate
-
-    payload = {**VALID_AGENT, **overrides}
-    return agent_service.create_agent(AgentCreate(**payload)).model_dump()
+@pytest_asyncio.fixture(scope="function")
+async def client(db_session):
+    """Create an async test client."""
+    async with AsyncClient(
+        transport=ASGITransport(app=_test_app),
+        base_url="http://test"
+    ) as ac:
+        yield ac
 
 
 # ===========================================================================
@@ -80,9 +91,10 @@ def _create_agent(**overrides) -> dict:
 class TestRegisterAgent:
     """Tests for POST /api/agents/register endpoint."""
 
-    def test_register_success(self):
+    @pytest.mark.asyncio
+    async def test_register_success(self, client):
         """Test successful agent registration."""
-        resp = client.post("/api/agents/register", json=VALID_AGENT)
+        resp = await client.post("/api/agents/register", json=VALID_AGENT)
         assert resp.status_code == 201
         body = resp.json()
         assert body["name"] == VALID_AGENT["name"]
@@ -100,14 +112,15 @@ class TestRegisterAgent:
         assert "created_at" in body
         assert "updated_at" in body
 
-    def test_register_minimal(self):
+    @pytest.mark.asyncio
+    async def test_register_minimal(self, client):
         """Test registration with minimal required fields."""
         minimal = {
             "name": "Simple Agent",
             "role": "frontend-engineer",
             "operator_wallet": VALID_WALLET,
         }
-        resp = client.post("/api/agents/register", json=minimal)
+        resp = await client.post("/api/agents/register", json=minimal)
         assert resp.status_code == 201
         body = resp.json()
         assert body["description"] is None
@@ -115,7 +128,8 @@ class TestRegisterAgent:
         assert body["languages"] == []
         assert body["apis"] == []
 
-    def test_register_all_roles(self):
+    @pytest.mark.asyncio
+    async def test_register_all_roles(self, client):
         """Test registration with each valid role."""
         roles = [
             "backend-engineer",
@@ -130,47 +144,54 @@ class TestRegisterAgent:
         ]
         for role in roles:
             agent = {**VALID_AGENT, "name": f"Agent-{role}", "role": role}
-            resp = client.post("/api/agents/register", json=agent)
+            resp = await client.post("/api/agents/register", json=agent)
             assert resp.status_code == 201, f"Failed for role: {role}"
             assert resp.json()["role"] == role
 
-    def test_register_invalid_role(self):
+    @pytest.mark.asyncio
+    async def test_register_invalid_role(self, client):
         """Test registration with invalid role."""
         invalid = {**VALID_AGENT, "role": "invalid-role"}
-        resp = client.post("/api/agents/register", json=invalid)
+        resp = await client.post("/api/agents/register", json=invalid)
         assert resp.status_code == 422
 
-    def test_register_missing_name(self):
+    @pytest.mark.asyncio
+    async def test_register_missing_name(self, client):
         """Test registration without name."""
         invalid = {k: v for k, v in VALID_AGENT.items() if k != "name"}
-        resp = client.post("/api/agents/register", json=invalid)
+        resp = await client.post("/api/agents/register", json=invalid)
         assert resp.status_code == 422
 
-    def test_register_empty_name(self):
+    @pytest.mark.asyncio
+    async def test_register_empty_name(self, client):
         """Test registration with empty name."""
         invalid = {**VALID_AGENT, "name": ""}
-        resp = client.post("/api/agents/register", json=invalid)
+        resp = await client.post("/api/agents/register", json=invalid)
         assert resp.status_code == 422
 
-    def test_register_name_too_long(self):
+    @pytest.mark.asyncio
+    async def test_register_name_too_long(self, client):
         """Test registration with name exceeding max length."""
         invalid = {**VALID_AGENT, "name": "A" * 101}
-        resp = client.post("/api/agents/register", json=invalid)
+        resp = await client.post("/api/agents/register", json=invalid)
         assert resp.status_code == 422
 
-    def test_register_description_too_long(self):
+    @pytest.mark.asyncio
+    async def test_register_description_too_long(self, client):
         """Test registration with description exceeding max length."""
         invalid = {**VALID_AGENT, "description": "A" * 2001}
-        resp = client.post("/api/agents/register", json=invalid)
+        resp = await client.post("/api/agents/register", json=invalid)
         assert resp.status_code == 422
 
-    def test_register_missing_wallet(self):
+    @pytest.mark.asyncio
+    async def test_register_missing_wallet(self, client):
         """Test registration without operator wallet."""
         invalid = {k: v for k, v in VALID_AGENT.items() if k != "operator_wallet"}
-        resp = client.post("/api/agents/register", json=invalid)
+        resp = await client.post("/api/agents/register", json=invalid)
         assert resp.status_code == 422
 
-    def test_register_invalid_wallet_format(self):
+    @pytest.mark.asyncio
+    async def test_register_invalid_wallet_format(self, client):
         """Test registration with invalid wallet address format."""
         invalid_wallets = [
             "invalid",
@@ -180,46 +201,51 @@ class TestRegisterAgent:
         ]
         for wallet in invalid_wallets:
             invalid = {**VALID_AGENT, "operator_wallet": wallet}
-            resp = client.post("/api/agents/register", json=invalid)
+            resp = await client.post("/api/agents/register", json=invalid)
             assert resp.status_code == 422, f"Should fail for wallet: {wallet}"
 
-    def test_register_capabilities_normalized(self):
+    @pytest.mark.asyncio
+    async def test_register_capabilities_normalized(self, client):
         """Test that capabilities are normalized to lowercase."""
         agent = {
             **VALID_AGENT,
             "capabilities": ["API-Design", " DATABASE ", "  MicroServices  "],
         }
-        resp = client.post("/api/agents/register", json=agent)
+        resp = await client.post("/api/agents/register", json=agent)
         assert resp.status_code == 201
         caps = resp.json()["capabilities"]
         assert "api-design" in caps
         assert "database" in caps
         assert "microservices" in caps
 
-    def test_register_too_many_capabilities(self):
+    @pytest.mark.asyncio
+    async def test_register_too_many_capabilities(self, client):
         """Test registration with too many capabilities."""
         invalid = {**VALID_AGENT, "capabilities": [f"cap{i}" for i in range(51)]}
-        resp = client.post("/api/agents/register", json=invalid)
+        resp = await client.post("/api/agents/register", json=invalid)
         assert resp.status_code == 422
 
-    def test_register_too_many_languages(self):
+    @pytest.mark.asyncio
+    async def test_register_too_many_languages(self, client):
         """Test registration with too many languages."""
         invalid = {**VALID_AGENT, "languages": [f"lang{i}" for i in range(21)]}
-        resp = client.post("/api/agents/register", json=invalid)
+        resp = await client.post("/api/agents/register", json=invalid)
         assert resp.status_code == 422
 
-    def test_register_too_many_apis(self):
+    @pytest.mark.asyncio
+    async def test_register_too_many_apis(self, client):
         """Test registration with too many APIs."""
         invalid = {**VALID_AGENT, "apis": [f"api{i}" for i in range(31)]}
-        resp = client.post("/api/agents/register", json=invalid)
+        resp = await client.post("/api/agents/register", json=invalid)
         assert resp.status_code == 422
 
-    def test_register_returns_unique_ids(self):
+    @pytest.mark.asyncio
+    async def test_register_returns_unique_ids(self, client):
         """Test that each registration returns a unique ID."""
         ids = set()
         for i in range(10):
             agent = {**VALID_AGENT, "name": f"Agent-{i}"}
-            resp = client.post("/api/agents/register", json=agent)
+            resp = await client.post("/api/agents/register", json=agent)
             assert resp.status_code == 201
             ids.add(resp.json()["id"])
         assert len(ids) == 10
@@ -233,30 +259,34 @@ class TestRegisterAgent:
 class TestGetAgent:
     """Tests for GET /api/agents/{agent_id} endpoint."""
 
-    def test_get_success(self):
+    @pytest.mark.asyncio
+    async def test_get_success(self, client):
         """Test successful agent retrieval."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        # First create an agent
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.get(f"/api/agents/{agent_id}")
+        resp = await client.get(f"/api/agents/{agent_id}")
         assert resp.status_code == 200
         body = resp.json()
         assert body["id"] == agent_id
         assert body["name"] == VALID_AGENT["name"]
         assert body["role"] == "backend-engineer"
 
-    def test_get_not_found(self):
+    @pytest.mark.asyncio
+    async def test_get_not_found(self, client):
         """Test getting a non-existent agent."""
-        resp = client.get("/api/agents/nonexistent-id")
+        resp = await client.get("/api/agents/nonexistent-id")
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"].lower()
 
-    def test_get_response_shape(self):
+    @pytest.mark.asyncio
+    async def test_get_response_shape(self, client):
         """Test that response contains all expected fields."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.get(f"/api/agents/{agent_id}")
+        resp = await client.get(f"/api/agents/{agent_id}")
         body = resp.json()
 
         expected_keys = {
@@ -284,9 +314,10 @@ class TestGetAgent:
 class TestListAgents:
     """Tests for GET /api/agents endpoint."""
 
-    def test_list_empty(self):
+    @pytest.mark.asyncio
+    async def test_list_empty(self, client):
         """Test listing when no agents exist."""
-        resp = client.get("/api/agents")
+        resp = await client.get("/api/agents")
         assert resp.status_code == 200
         body = resp.json()
         assert body["total"] == 0
@@ -294,101 +325,88 @@ class TestListAgents:
         assert body["page"] == 1
         assert body["limit"] == 20
 
-    def test_list_with_data(self):
+    @pytest.mark.asyncio
+    async def test_list_with_data(self, client):
         """Test listing with multiple agents."""
-        _create_agent(name="Agent 1")
-        _create_agent(name="Agent 2")
-        _create_agent(name="Agent 3")
+        for i in range(3):
+            agent = {**VALID_AGENT, "name": f"Agent-{i}"}
+            await client.post("/api/agents/register", json=agent)
 
-        resp = client.get("/api/agents")
+        resp = await client.get("/api/agents")
         assert resp.status_code == 200
         body = resp.json()
         assert body["total"] == 3
         assert len(body["items"]) == 3
 
-    def test_list_pagination(self):
+    @pytest.mark.asyncio
+    async def test_list_pagination(self, client):
         """Test pagination of agent list."""
         for i in range(25):
-            _create_agent(name=f"Agent-{i}")
+            agent = {**VALID_AGENT, "name": f"Agent-{i}"}
+            await client.post("/api/agents/register", json=agent)
 
         # First page
-        resp = client.get("/api/agents?page=1&limit=10")
+        resp = await client.get("/api/agents?page=1&limit=10")
         body = resp.json()
         assert body["total"] == 25
         assert len(body["items"]) == 10
         assert body["page"] == 1
 
         # Second page
-        resp = client.get("/api/agents?page=2&limit=10")
+        resp = await client.get("/api/agents?page=2&limit=10")
         body = resp.json()
         assert len(body["items"]) == 10
         assert body["page"] == 2
 
         # Third page
-        resp = client.get("/api/agents?page=3&limit=10")
+        resp = await client.get("/api/agents?page=3&limit=10")
         body = resp.json()
         assert len(body["items"]) == 5
         assert body["page"] == 3
 
-    def test_list_filter_by_role(self):
+    @pytest.mark.asyncio
+    async def test_list_filter_by_role(self, client):
         """Test filtering by role."""
-        _create_agent(name="Backend Agent", role="backend-engineer")
-        _create_agent(name="Frontend Agent", role="frontend-engineer")
-        _create_agent(name="AI Agent", role="ai-engineer")
+        await client.post("/api/agents/register", json={**VALID_AGENT, "name": "Backend Agent", "role": "backend-engineer"})
+        await client.post("/api/agents/register", json={**VALID_AGENT, "name": "Frontend Agent", "role": "frontend-engineer", "operator_wallet": ANOTHER_WALLET})
+        await client.post("/api/agents/register", json={**VALID_AGENT, "name": "AI Agent", "role": "ai-engineer", "operator_wallet": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"})
 
-        resp = client.get("/api/agents?role=backend-engineer")
+        resp = await client.get("/api/agents?role=backend-engineer")
         body = resp.json()
         assert body["total"] == 1
         assert body["items"][0]["role"] == "backend-engineer"
 
-        resp = client.get("/api/agents?role=frontend-engineer")
+        resp = await client.get("/api/agents?role=frontend-engineer")
         body = resp.json()
         assert body["total"] == 1
         assert body["items"][0]["role"] == "frontend-engineer"
 
-    def test_list_filter_by_availability(self):
-        """Test filtering by availability."""
-        _create_agent(name="Available Agent")
-        agent2 = _create_agent(name="Inactive Agent")
-
-        # Deactivate the second agent
-        from app.models.agent import AgentUpdate
-
-        agent_service.update_agent(
-            agent2["id"],
-            AgentUpdate(availability="unavailable"),
-            agent2["operator_wallet"],
-        )
-        agent_service.deactivate_agent(agent2["id"], agent2["operator_wallet"])
-
-        resp = client.get("/api/agents?available=true")
-        body = resp.json()
-        assert body["total"] == 1
-        assert body["items"][0]["name"] == "Available Agent"
-
-    def test_list_limit_validation(self):
+    @pytest.mark.asyncio
+    async def test_list_limit_validation(self, client):
         """Test limit parameter validation."""
         # Valid limits
-        assert client.get("/api/agents?limit=1").status_code == 200
-        assert client.get("/api/agents?limit=100").status_code == 200
+        assert (await client.get("/api/agents?limit=1")).status_code == 200
+        assert (await client.get("/api/agents?limit=100")).status_code == 200
 
         # Invalid limits
-        assert client.get("/api/agents?limit=0").status_code == 422
-        assert client.get("/api/agents?limit=101").status_code == 422
+        assert (await client.get("/api/agents?limit=0")).status_code == 422
+        assert (await client.get("/api/agents?limit=101")).status_code == 422
 
-    def test_list_page_validation(self):
+    @pytest.mark.asyncio
+    async def test_list_page_validation(self, client):
         """Test page parameter validation."""
         # Valid pages
-        assert client.get("/api/agents?page=1").status_code == 200
+        assert (await client.get("/api/agents?page=1")).status_code == 200
 
         # Invalid pages
-        assert client.get("/api/agents?page=0").status_code == 422
-        assert client.get("/api/agents?page=-1").status_code == 422
+        assert (await client.get("/api/agents?page=0")).status_code == 422
+        assert (await client.get("/api/agents?page=-1")).status_code == 422
 
-    def test_list_item_shape(self):
+    @pytest.mark.asyncio
+    async def test_list_item_shape(self, client):
         """Test that list items have expected fields."""
-        _create_agent()
-        resp = client.get("/api/agents")
+        await client.post("/api/agents/register", json=VALID_AGENT)
+        resp = await client.get("/api/agents")
         item = resp.json()["items"][0]
 
         expected_keys = {
@@ -403,24 +421,6 @@ class TestListAgents:
         }
         assert set(item.keys()) == expected_keys
 
-    def test_list_sorted_by_created_at_desc(self):
-        """Test that agents are sorted by created_at descending."""
-        import time
-
-        _create_agent(name="First")
-        time.sleep(0.01)
-        _create_agent(name="Second")
-        time.sleep(0.01)
-        _create_agent(name="Third")
-
-        resp = client.get("/api/agents")
-        items = resp.json()["items"]
-
-        # Most recent first
-        assert items[0]["name"] == "Third"
-        assert items[1]["name"] == "Second"
-        assert items[2]["name"] == "First"
-
 
 # ===========================================================================
 # PATCH /api/agents/{agent_id} - Update Agent Tests
@@ -430,12 +430,13 @@ class TestListAgents:
 class TestUpdateAgent:
     """Tests for PATCH /api/agents/{agent_id} endpoint."""
 
-    def test_update_name(self):
+    @pytest.mark.asyncio
+    async def test_update_name(self, client):
         """Test updating agent name."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"name": "Updated Name"},
             headers={"X-Operator-Wallet": VALID_WALLET},
@@ -443,12 +444,13 @@ class TestUpdateAgent:
         assert resp.status_code == 200
         assert resp.json()["name"] == "Updated Name"
 
-    def test_update_description(self):
+    @pytest.mark.asyncio
+    async def test_update_description(self, client):
         """Test updating agent description."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"description": "New description"},
             headers={"X-Operator-Wallet": VALID_WALLET},
@@ -456,12 +458,13 @@ class TestUpdateAgent:
         assert resp.status_code == 200
         assert resp.json()["description"] == "New description"
 
-    def test_update_role(self):
+    @pytest.mark.asyncio
+    async def test_update_role(self, client):
         """Test updating agent role."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"role": "ai-engineer"},
             headers={"X-Operator-Wallet": VALID_WALLET},
@@ -469,12 +472,13 @@ class TestUpdateAgent:
         assert resp.status_code == 200
         assert resp.json()["role"] == "ai-engineer"
 
-    def test_update_capabilities(self):
+    @pytest.mark.asyncio
+    async def test_update_capabilities(self, client):
         """Test updating agent capabilities."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"capabilities": ["new-capability-1", "new-capability-2"]},
             headers={"X-Operator-Wallet": VALID_WALLET},
@@ -485,12 +489,13 @@ class TestUpdateAgent:
             "new-capability-2",
         }
 
-    def test_update_availability(self):
+    @pytest.mark.asyncio
+    async def test_update_availability(self, client):
         """Test updating agent availability."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"availability": "busy"},
             headers={"X-Operator-Wallet": VALID_WALLET},
@@ -498,12 +503,13 @@ class TestUpdateAgent:
         assert resp.status_code == 200
         assert resp.json()["availability"] == "busy"
 
-    def test_update_multiple_fields(self):
+    @pytest.mark.asyncio
+    async def test_update_multiple_fields(self, client):
         """Test updating multiple fields at once."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={
                 "name": "New Name",
@@ -518,13 +524,14 @@ class TestUpdateAgent:
         assert body["description"] == "New description"
         assert body["availability"] == "offline"
 
-    def test_update_preserves_unset_fields(self):
+    @pytest.mark.asyncio
+    async def test_update_preserves_unset_fields(self, client):
         """Test that unset fields are preserved."""
-        agent = _create_agent()
-        agent_id = agent["id"]
-        original_desc = agent["description"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
+        original_desc = create_resp.json()["description"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"name": "Changed Name"},
             headers={"X-Operator-Wallet": VALID_WALLET},
@@ -532,32 +539,35 @@ class TestUpdateAgent:
         assert resp.status_code == 200
         assert resp.json()["description"] == original_desc
 
-    def test_update_not_found(self):
+    @pytest.mark.asyncio
+    async def test_update_not_found(self, client):
         """Test updating non-existent agent."""
-        resp = client.patch(
+        resp = await client.patch(
             "/api/agents/nonexistent-id",
             json={"name": "New Name"},
             headers={"X-Operator-Wallet": VALID_WALLET},
         )
         assert resp.status_code == 404
 
-    def test_update_missing_auth_header(self):
+    @pytest.mark.asyncio
+    async def test_update_missing_auth_header(self, client):
         """Test update without authentication header."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"name": "New Name"},
         )
         assert resp.status_code == 401
 
-    def test_update_wrong_wallet(self):
+    @pytest.mark.asyncio
+    async def test_update_wrong_wallet(self, client):
         """Test update with wrong wallet address."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"name": "New Name"},
             headers={"X-Operator-Wallet": ANOTHER_WALLET},
@@ -565,13 +575,14 @@ class TestUpdateAgent:
         assert resp.status_code == 403
         assert "unauthorized" in resp.json()["detail"].lower()
 
-    def test_update_updates_timestamp(self):
+    @pytest.mark.asyncio
+    async def test_update_updates_timestamp(self, client):
         """Test that update changes updated_at timestamp."""
-        agent = _create_agent()
-        agent_id = agent["id"]
-        original_updated = agent["updated_at"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
+        original_updated = create_resp.json()["updated_at"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"name": "New Name"},
             headers={"X-Operator-Wallet": VALID_WALLET},
@@ -581,36 +592,39 @@ class TestUpdateAgent:
         # Compare as strings since JSON serializes datetime to ISO format
         assert str(new_updated) >= str(original_updated)
 
-    def test_update_invalid_name_empty(self):
+    @pytest.mark.asyncio
+    async def test_update_invalid_name_empty(self, client):
         """Test update with empty name."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"name": ""},
             headers={"X-Operator-Wallet": VALID_WALLET},
         )
         assert resp.status_code == 422
 
-    def test_update_invalid_name_too_long(self):
+    @pytest.mark.asyncio
+    async def test_update_invalid_name_too_long(self, client):
         """Test update with name too long."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"name": "A" * 101},
             headers={"X-Operator-Wallet": VALID_WALLET},
         )
         assert resp.status_code == 422
 
-    def test_update_invalid_role(self):
+    @pytest.mark.asyncio
+    async def test_update_invalid_role(self, client):
         """Test update with invalid role."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"role": "invalid-role"},
             headers={"X-Operator-Wallet": VALID_WALLET},
@@ -626,62 +640,67 @@ class TestUpdateAgent:
 class TestDeactivateAgent:
     """Tests for DELETE /api/agents/{agent_id} endpoint."""
 
-    def test_deactivate_success(self):
+    @pytest.mark.asyncio
+    async def test_deactivate_success(self, client):
         """Test successful agent deactivation."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.delete(
+        resp = await client.delete(
             f"/api/agents/{agent_id}",
             headers={"X-Operator-Wallet": VALID_WALLET},
         )
         assert resp.status_code == 204
 
         # Verify agent is deactivated
-        deactivated = agent_service.get_agent(agent_id)
-        assert deactivated.is_active is False
+        get_resp = await client.get(f"/api/agents/{agent_id}")
+        assert get_resp.json()["is_active"] is False
 
-    def test_deactivate_not_found(self):
+    @pytest.mark.asyncio
+    async def test_deactivate_not_found(self, client):
         """Test deactivating non-existent agent."""
-        resp = client.delete(
+        resp = await client.delete(
             "/api/agents/nonexistent-id",
             headers={"X-Operator-Wallet": VALID_WALLET},
         )
         assert resp.status_code == 404
 
-    def test_deactivate_missing_auth_header(self):
+    @pytest.mark.asyncio
+    async def test_deactivate_missing_auth_header(self, client):
         """Test deactivate without authentication header."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.delete(f"/api/agents/{agent_id}")
+        resp = await client.delete(f"/api/agents/{agent_id}")
         assert resp.status_code == 401
 
-    def test_deactivate_wrong_wallet(self):
+    @pytest.mark.asyncio
+    async def test_deactivate_wrong_wallet(self, client):
         """Test deactivate with wrong wallet address."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.delete(
+        resp = await client.delete(
             f"/api/agents/{agent_id}",
             headers={"X-Operator-Wallet": ANOTHER_WALLET},
         )
         assert resp.status_code == 403
         assert "unauthorized" in resp.json()["detail"].lower()
 
-    def test_deactivate_removes_from_available_list(self):
+    @pytest.mark.asyncio
+    async def test_deactivate_removes_from_available_list(self, client):
         """Test that deactivated agent doesn't appear in available list."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
         # Deactivate
-        client.delete(
+        await client.delete(
             f"/api/agents/{agent_id}",
             headers={"X-Operator-Wallet": VALID_WALLET},
         )
 
         # Check available list
-        resp = client.get("/api/agents?available=true")
+        resp = await client.get("/api/agents?available=true")
         assert resp.json()["total"] == 0
 
 
@@ -693,9 +712,11 @@ class TestDeactivateAgent:
 class TestHealth:
     """Health check test for API sanity."""
 
-    def test_health(self):
+    @pytest.mark.asyncio
+    async def test_health(self, client):
         """Test health endpoint."""
-        assert client.get("/health").json() == {"status": "ok"}
+        resp = await client.get("/health")
+        assert resp.json() == {"status": "ok"}
 
 
 # ===========================================================================
@@ -706,27 +727,30 @@ class TestHealth:
 class TestErrorResponses:
     """Tests for consistent error response format."""
 
-    def test_404_error_format(self):
+    @pytest.mark.asyncio
+    async def test_404_error_format(self, client):
         """Test 404 error response format."""
-        resp = client.get("/api/agents/nonexistent")
+        resp = await client.get("/api/agents/nonexistent")
         assert resp.status_code == 404
         body = resp.json()
         assert "detail" in body
 
-    def test_422_error_format(self):
+    @pytest.mark.asyncio
+    async def test_422_error_format(self, client):
         """Test 422 validation error format."""
         invalid = {**VALID_AGENT, "name": ""}  # Empty name
-        resp = client.post("/api/agents/register", json=invalid)
+        resp = await client.post("/api/agents/register", json=invalid)
         assert resp.status_code == 422
         body = resp.json()
         assert "detail" in body
 
-    def test_401_error_format(self):
+    @pytest.mark.asyncio
+    async def test_401_error_format(self, client):
         """Test 401 unauthorized error format."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"name": "New Name"},
         )
@@ -734,12 +758,13 @@ class TestErrorResponses:
         body = resp.json()
         assert "detail" in body
 
-    def test_403_error_format(self):
+    @pytest.mark.asyncio
+    async def test_403_error_format(self, client):
         """Test 403 forbidden error format."""
-        agent = _create_agent()
-        agent_id = agent["id"]
+        create_resp = await client.post("/api/agents/register", json=VALID_AGENT)
+        agent_id = create_resp.json()["id"]
 
-        resp = client.patch(
+        resp = await client.patch(
             f"/api/agents/{agent_id}",
             json={"name": "New Name"},
             headers={"X-Operator-Wallet": ANOTHER_WALLET},

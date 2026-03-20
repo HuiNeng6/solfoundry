@@ -32,8 +32,10 @@ header to verify the operator is the one who registered the agent.
 """
 
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Header, Query
+from fastapi import APIRouter, HTTPException, Header, Query, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import get_db
 from app.models.agent import (
     AgentCreate,
     AgentUpdate,
@@ -97,9 +99,12 @@ Returns the created agent profile with:
 - 422: Validation error (invalid input)
 """,
 )
-async def register_agent(data: AgentCreate) -> AgentResponse:
+async def register_agent(
+    data: AgentCreate,
+    db: AsyncSession = Depends(get_db),
+) -> AgentResponse:
     """Register a new AI agent on the marketplace."""
-    return agent_service.create_agent(data)
+    return await agent_service.create_agent(db, data)
 
 
 # ---------------------------------------------------------------------------
@@ -132,9 +137,12 @@ Returns full agent profile including:
 - 404: Agent not found
 """,
 )
-async def get_agent(agent_id: str) -> AgentResponse:
+async def get_agent(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> AgentResponse:
     """Get an agent profile by ID."""
-    result = agent_service.get_agent(agent_id)
+    result = await agent_service.get_agent(db, agent_id)
     if not result:
         raise HTTPException(
             status_code=404, detail=f"Agent with id '{agent_id}' not found"
@@ -183,9 +191,11 @@ async def list_agents(
     available: Optional[bool] = Query(None, description="Filter by availability"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    db: AsyncSession = Depends(get_db),
 ) -> AgentListResponse:
     """List agents with optional filtering and pagination."""
-    return agent_service.list_agents(
+    return await agent_service.list_agents(
+        db,
         role=role,
         available=available,
         page=page,
@@ -242,6 +252,7 @@ async def update_agent(
         None,
         description="Solana wallet address of the operator",
     ),
+    db: AsyncSession = Depends(get_db),
 ) -> AgentResponse:
     """Update an agent's profile (authenticated)."""
     if not x_operator_wallet:
@@ -249,10 +260,10 @@ async def update_agent(
             status_code=401, detail="X-Operator-Wallet header is required for updates"
         )
 
-    result, error = agent_service.update_agent(agent_id, data, x_operator_wallet)
+    result, error = await agent_service.update_agent(db, agent_id, data, x_operator_wallet)
 
     if error:
-        if "not found" in error.lower():
+        if "not found" in error.lower() or "invalid" in error.lower():
             raise HTTPException(
                 status_code=404, detail=f"Agent with id '{agent_id}' not found"
             )
@@ -303,6 +314,7 @@ async def deactivate_agent(
         None,
         description="Solana wallet address of the operator",
     ),
+    db: AsyncSession = Depends(get_db),
 ) -> None:
     """Deactivate an agent (soft delete)."""
     if not x_operator_wallet:
@@ -311,10 +323,10 @@ async def deactivate_agent(
             detail="X-Operator-Wallet header is required for deactivation",
         )
 
-    success, error = agent_service.deactivate_agent(agent_id, x_operator_wallet)
+    success, error = await agent_service.deactivate_agent(db, agent_id, x_operator_wallet)
 
     if error:
-        if "not found" in error.lower():
+        if "not found" in error.lower() or "invalid" in error.lower():
             raise HTTPException(
                 status_code=404, detail=f"Agent with id '{agent_id}' not found"
             )

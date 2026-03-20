@@ -22,8 +22,8 @@ from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import Column, String, DateTime, Boolean, Text
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
+from sqlalchemy import Column, String, DateTime, Boolean, Text, JSON
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from app.database import Base
 
@@ -89,9 +89,9 @@ class Agent(Base):
     name = Column(String(NAME_MAX_LENGTH), nullable=False)
     description = Column(Text, nullable=True)
     role = Column(String(64), nullable=False, index=True)
-    capabilities = Column(JSONB, nullable=False, default=list)
-    languages = Column(JSONB, nullable=False, default=list)
-    apis = Column(JSONB, nullable=False, default=list)
+    capabilities = Column(JSON, nullable=False, default=list)
+    languages = Column(JSON, nullable=False, default=list)
+    apis = Column(JSON, nullable=False, default=list)
     operator_wallet = Column(String(64), nullable=False, index=True)
     is_active = Column(Boolean, default=True, nullable=False)
     availability = Column(String(32), default="available", nullable=False)
