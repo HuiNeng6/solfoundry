@@ -37,12 +37,14 @@ engine_kwargs = {
     "echo": os.getenv("SQL_ECHO", "false").lower() == "true",
 }
 if not is_sqlite:
-    engine_kwargs.update({
-        "pool_pre_ping": True,
-        "pool_size": POOL_SIZE,
-        "max_overflow": POOL_MAX_OVERFLOW,
-        "pool_timeout": POOL_TIMEOUT,
-    })
+    engine_kwargs.update(
+        {
+            "pool_pre_ping": True,
+            "pool_size": POOL_SIZE,
+            "max_overflow": POOL_MAX_OVERFLOW,
+            "pool_timeout": POOL_TIMEOUT,
+        }
+    )
 
 engine = create_async_engine(DATABASE_URL, **engine_kwargs)
 
