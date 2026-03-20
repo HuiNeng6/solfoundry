@@ -23,6 +23,11 @@ pytestmark = pytest.mark.skip(reason="BountySearchService not yet implemented")
 # from app.services.bounty_service import BountySearchService
 # from app.models.bounty import BountySearchParams
 
+# Stub definitions to avoid F821 lint errors during development
+# These will be replaced with actual imports when the service is implemented
+BountySearchService = None  # type: ignore[misc,assignment]
+BountySearchParams = None  # type: ignore[misc,assignment]
+
 
 # Test database URL (PostgreSQL required for FTS)
 TEST_DATABASE_URL = os.getenv(

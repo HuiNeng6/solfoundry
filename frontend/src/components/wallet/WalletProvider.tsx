@@ -20,7 +20,7 @@ export const useNetwork = () => useContext(NetworkContext);
 export function WalletProvider({ children, defaultNetwork = DEFAULT_NETWORK }: { children: ReactNode; defaultNetwork?: SolanaNetwork }) {
   const [network, setNetworkState] = useState<SolanaNetwork>(defaultNetwork);
   const endpoint = useMemo(() => NETWORK_OPTIONS.find(o => o.value === network)?.endpoint ?? clusterApiUrl(network), [network]);
-  const wallets = useMemo(() => [new PhantomWalletAdapter(), new SolflareWalletAdapter(), new BackpackWalletAdapter()], []);
+  const wallets = useMemo(() => [new PhantomWalletAdapter(), new SolflareWalletAdapter()], []);
   const setNetwork = useCallback((n: SolanaNetwork) => setNetworkState(n), []);
   const ctx = useMemo<NetworkCtx>(() => ({ network, endpoint, setNetwork, networkOptions: NETWORK_OPTIONS }), [network, endpoint, setNetwork]);
 

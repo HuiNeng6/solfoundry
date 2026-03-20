@@ -47,7 +47,7 @@ class NotificationDB(Base):
     created_at = Column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
     )
-    metadata = Column(JSON, nullable=True)  # Additional context
+    extra_data = Column(JSON, nullable=True)  # Additional context
 
     __table_args__ = (
         Index("ix_notifications_user_read", user_id, read),
@@ -65,7 +65,7 @@ class NotificationBase(BaseModel):
     title: str = Field(..., max_length=255)
     message: str
     bounty_id: Optional[str] = None
-    metadata: Optional[dict] = None
+    extra_data: Optional[dict] = None
 
 
 class NotificationCreate(NotificationBase):
