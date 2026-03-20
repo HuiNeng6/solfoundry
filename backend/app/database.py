@@ -123,6 +123,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         # Import models to ensure they are registered with Base
         from app.models.notification import NotificationDB  # noqa: F401
+        from app.models.audit_log import AuditLogDB  # noqa: F401
         
         # Create all tables from model definitions
         await conn.run_sync(Base.metadata.create_all)
@@ -165,6 +166,35 @@ async def init_db() -> None:
         await conn.execute(text("""
             CREATE INDEX IF NOT EXISTS ix_bounties_status_category 
             ON bounties(status, category);
+        """))
+        
+        # Create audit log immutability trigger function
+        await conn.execute(text("""
+            CREATE OR REPLACE FUNCTION enforce_audit_log_immutability()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                RAISE EXCEPTION 'Audit logs are immutable and cannot be modified or deleted';
+                RETURN NULL;
+            END;
+            $$ LANGUAGE plpgsql;
+        """))
+        
+        # Create trigger to prevent audit log updates
+        await conn.execute(text("""
+            DROP TRIGGER IF EXISTS prevent_audit_log_update ON audit_logs;
+            CREATE TRIGGER prevent_audit_log_update
+                BEFORE UPDATE ON audit_logs
+                FOR EACH ROW
+                EXECUTE FUNCTION enforce_audit_log_immutability();
+        """))
+        
+        # Create trigger to prevent audit log deletes
+        await conn.execute(text("""
+            DROP TRIGGER IF EXISTS prevent_audit_log_delete ON audit_logs;
+            CREATE TRIGGER prevent_audit_log_delete
+                BEFORE DELETE ON audit_logs
+                FOR EACH ROW
+                EXECUTE FUNCTION enforce_audit_log_immutability();
         """))
         
         logger.info("Database schema initialized successfully")
