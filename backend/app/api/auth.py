@@ -14,16 +14,24 @@ from fastapi import APIRouter, Depends, HTTPException, status, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.models.user import (
-    GitHubOAuthRequest, GitHubOAuthResponse,
-    WalletAuthRequest, WalletAuthResponse,
-    LinkWalletRequest, LinkWalletResponse,
-    RefreshTokenRequest, RefreshTokenResponse,
-    UserResponse, AuthMessageResponse,
+    GitHubOAuthRequest,
+    GitHubOAuthResponse,
+    WalletAuthRequest,
+    WalletAuthResponse,
+    LinkWalletRequest,
+    LinkWalletResponse,
+    RefreshTokenRequest,
+    RefreshTokenResponse,
+    UserResponse,
+    AuthMessageResponse,
 )
 from app.services import auth_service
 from app.services.auth_service import (
-    AuthError, GitHubOAuthError, WalletVerificationError,
-    TokenExpiredError, InvalidTokenError,
+    AuthError,
+    GitHubOAuthError,
+    WalletVerificationError,
+    TokenExpiredError,
+    InvalidTokenError,
 )
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
