@@ -32,6 +32,7 @@ class User(Base):
 
 class UserDB(BaseModel):
     """Pydantic model for user data in tests and services."""
+
     id: Optional[object] = None
     github_id: str
     username: str
