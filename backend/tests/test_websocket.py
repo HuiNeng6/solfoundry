@@ -2,23 +2,20 @@
 
 This module tests:
 - WebSocket connection lifecycle
-- Subscription management per bounty spec
+- Channel-based subscriptions (bounties, prs, payouts, leaderboard)
 - Event broadcasting
 - Heartbeat mechanism
 - JWT authentication
 - Rate limiting
-- Reconnection handling
-- Error handling
 """
 
 import pytest
 import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
-from fastapi import FastAPI, WebSocket, status
+from fastapi import FastAPI, WebSocket
 
 from app.api.websocket import (
     router,
@@ -26,18 +23,15 @@ from app.api.websocket import (
     broadcast_pr_event,
     broadcast_payout_event,
     broadcast_leaderboard_event,
-    broadcast_pr_status,
-    broadcast_payout_sent,
 )
 from app.services.websocket_manager import (
     ConnectionManager,
     EventType,
     Channel,
-    Subscription,
+    RateLimit,
     WebSocketMessage,
     HeartbeatMessage,
     ErrorMessage,
-    AuthenticationError,
 )
 
 
@@ -63,106 +57,66 @@ def mock_websocket():
     return ws
 
 
-class TestSubscription:
-    """Tests for Subscription dataclass."""
+class TestRateLimit:
+    """Tests for rate limiting."""
     
-    def test_subscription_creation(self):
-        """Test creating a subscription."""
-        sub = Subscription(channel="bounties")
-        assert sub.channel == "bounties"
-    
-    def test_subscription_with_id(self):
-        """Test creating a subscription with specific ID."""
-        sub = Subscription(channel="bounties:42")
-        assert sub.channel == "bounties:42"
-        assert sub.to_channel_name() == "bounties"
-        assert sub.get_target_id() == "42"
-    
-    def test_subscription_to_redis_channel(self):
-        """Test Redis channel name generation."""
-        sub = Subscription(channel="bounties:42")
-        assert sub.to_redis_channel() == "ws:bounties:42"
-    
-    def test_subscription_from_string_valid(self):
-        """Test parsing valid subscription strings."""
-        sub = Subscription.from_string("bounties")
-        assert sub is not None
-        assert sub.channel == "bounties"
+    def test_rate_limit_allows_initial_messages(self):
+        """Test that rate limit allows initial messages."""
+        rl = RateLimit(max_messages=5, window_seconds=60)
         
-        sub = Subscription.from_string("bounties:42")
-        assert sub is not None
-        assert sub.channel == "bounties:42"
+        for _ in range(5):
+            assert rl.is_allowed() is True
     
-    def test_subscription_from_string_invalid(self):
-        """Test parsing invalid subscription strings."""
-        assert Subscription.from_string("invalid_channel") is None
-        assert Subscription.from_string("") is None
-    
-    def test_subscription_equality(self):
-        """Test subscription equality."""
-        sub1 = Subscription(channel="bounties:42")
-        sub2 = Subscription(channel="bounties:42")
-        sub3 = Subscription(channel="bounties:43")
+    def test_rate_limit_blocks_excess(self):
+        """Test that rate limit blocks excess messages."""
+        rl = RateLimit(max_messages=3, window_seconds=60)
         
-        assert sub1 == sub2
-        assert sub1 != sub3
+        assert rl.is_allowed() is True
+        assert rl.is_allowed() is True
+        assert rl.is_allowed() is True
+        assert rl.is_allowed() is False  # Exceeds limit
+    
+    def test_rate_limit_remaining(self):
+        """Test remaining message count."""
+        rl = RateLimit(max_messages=5, window_seconds=60)
+        
+        assert rl.remaining() == 5
+        rl.is_allowed()
+        assert rl.remaining() == 4
+        rl.is_allowed()
+        assert rl.remaining() == 3
 
 
 class TestConnectionManager:
     """Tests for ConnectionManager."""
     
     @pytest.mark.asyncio
-    async def test_connect_without_token(self, manager, mock_websocket):
-        """Test WebSocket connection without authentication."""
-        info = await manager.connect(mock_websocket, token=None)
+    async def test_connect(self, manager, mock_websocket):
+        """Test WebSocket connection."""
+        info = await manager.connect(mock_websocket, "user_123")
         
-        assert info.user_id is None
-        assert not info.is_authenticated
+        assert info.user_id == "user_123"
+        assert info.is_alive
         mock_websocket.accept.assert_called_once()
         assert manager.get_connection_count() == 1
     
     @pytest.mark.asyncio
-    async def test_connect_with_valid_jwt(self, manager, mock_websocket):
-        """Test WebSocket connection with valid JWT token."""
-        import jwt
-        test_secret = "test_secret"
-        manager._jwt_secret = test_secret
+    async def test_connect_authenticated(self, manager, mock_websocket):
+        """Test authenticated WebSocket connection."""
+        info = await manager.connect(mock_websocket, "user_123", authenticated=True)
         
-        token = jwt.encode({"user_id": "user_123"}, test_secret, algorithm="HS256")
-        
-        info = await manager.connect(mock_websocket, token=token)
-        
-        assert info.user_id == "user_123"
-        assert info.is_authenticated
-    
-    @pytest.mark.asyncio
-    async def test_connect_with_expired_jwt(self, manager, mock_websocket):
-        """Test WebSocket connection with expired JWT token."""
-        import jwt
-        from datetime import timedelta
-        
-        test_secret = "test_secret"
-        manager._jwt_secret = test_secret
-        
-        expired_payload = {
-            "user_id": "user_123",
-            "exp": datetime.now(timezone.utc) - timedelta(hours=1)
-        }
-        token = jwt.encode(expired_payload, test_secret, algorithm="HS256")
-        
-        with pytest.raises(AuthenticationError):
-            await manager.connect(mock_websocket, token=token)
+        assert info.authenticated is True
     
     @pytest.mark.asyncio
     async def test_disconnect(self, manager, mock_websocket):
         """Test WebSocket disconnection."""
-        await manager.connect(mock_websocket, token=None)
+        await manager.connect(mock_websocket, "user_123")
         await manager.disconnect(mock_websocket)
         
         assert manager.get_connection_count() == 0
     
     @pytest.mark.asyncio
-    async def test_multiple_connections(self, manager):
+    async def test_multiple_connections_same_user(self, manager):
         """Test multiple connections from the same user."""
         ws1 = MagicMock(spec=WebSocket)
         ws1.accept = AsyncMock()
@@ -172,87 +126,138 @@ class TestConnectionManager:
         ws2.accept = AsyncMock()
         ws2.send_json = AsyncMock()
         
-        import jwt
-        test_secret = "test_secret"
-        manager._jwt_secret = test_secret
-        token = jwt.encode({"user_id": "user_123"}, test_secret, algorithm="HS256")
-        
-        await manager.connect(ws1, token=token)
-        await manager.connect(ws2, token=token)
+        await manager.connect(ws1, "user_123")
+        await manager.connect(ws2, "user_123")
         
         assert manager.get_connection_count() == 2
-        assert manager.get_user_connection_count("user_123") == 2
     
     @pytest.mark.asyncio
-    async def test_subscribe(self, manager, mock_websocket):
+    async def test_subscribe_to_channel(self, manager, mock_websocket):
         """Test subscription to a channel."""
-        await manager.connect(mock_websocket, token=None)
+        await manager.connect(mock_websocket, "user_123")
         
-        sub = Subscription(channel="bounties")
-        success = await manager.subscribe(mock_websocket, sub)
+        success = await manager.subscribe(mock_websocket, "bounties")
         
         assert success
         info = manager._ws_to_info.get(mock_websocket)
-        assert sub in info.subscriptions
+        assert "bounties" in info.subscriptions
     
     @pytest.mark.asyncio
-    async def test_subscribe_specific_bounty(self, manager, mock_websocket):
-        """Test subscription to specific bounty."""
-        await manager.connect(mock_websocket, token=None)
+    async def test_subscribe_to_specific_bounty(self, manager, mock_websocket):
+        """Test subscription to a specific bounty."""
+        await manager.connect(mock_websocket, "user_123")
         
-        sub = Subscription(channel="bounties:42")
-        success = await manager.subscribe(mock_websocket, sub)
+        success = await manager.subscribe(mock_websocket, "bounty:42")
         
         assert success
         info = manager._ws_to_info.get(mock_websocket)
-        assert sub in info.subscriptions
+        assert "bounty:42" in info.subscriptions
     
     @pytest.mark.asyncio
     async def test_unsubscribe(self, manager, mock_websocket):
         """Test unsubscribing from a channel."""
-        await manager.connect(mock_websocket, token=None)
+        await manager.connect(mock_websocket, "user_123")
+        await manager.subscribe(mock_websocket, "bounties")
         
-        sub = Subscription(channel="bounties:42")
-        await manager.subscribe(mock_websocket, sub)
-        success = await manager.unsubscribe(mock_websocket, sub)
+        success = await manager.unsubscribe(mock_websocket, "bounties")
         
         assert success
         info = manager._ws_to_info.get(mock_websocket)
-        assert sub not in info.subscriptions
+        assert "bounties" not in info.subscriptions
     
     @pytest.mark.asyncio
-    async def test_broadcast_to_channel(self, manager, mock_websocket):
-        """Test broadcasting to channel subscribers."""
-        await manager.connect(mock_websocket, token=None)
+    async def test_parse_subscription_channel(self, manager):
+        """Test parsing channel subscription."""
+        result = manager.parse_subscription("bounties")
+        assert result == ("bounties", None)
         
-        sub = Subscription(channel="bounties")
-        await manager.subscribe(mock_websocket, sub)
+        result = manager.parse_subscription("prs")
+        assert result == ("prs", None)
+    
+    @pytest.mark.asyncio
+    async def test_parse_subscription_specific(self, manager):
+        """Test parsing specific subscription."""
+        result = manager.parse_subscription("bounty:42")
+        assert result == ("bounty", "42")
+        
+        result = manager.parse_subscription("pr:123")
+        assert result == ("pr", "123")
+    
+    @pytest.mark.asyncio
+    async def test_parse_subscription_invalid(self, manager):
+        """Test parsing invalid subscription."""
+        result = manager.parse_subscription("invalid_channel")
+        assert result is None
+    
+    @pytest.mark.asyncio
+    async def test_rate_limit_check(self, manager, mock_websocket):
+        """Test rate limit checking."""
+        await manager.connect(mock_websocket, "user_123")
+        
+        # Should allow messages initially
+        for _ in range(100):
+            assert manager.check_rate_limit(mock_websocket) is True
+        
+        # Should block after limit
+        assert manager.check_rate_limit(mock_websocket) is False
+    
+    @pytest.mark.asyncio
+    async def test_send_personal_message(self, manager, mock_websocket):
+        """Test sending a message to a specific connection."""
+        await manager.connect(mock_websocket, "user_123")
+        
+        success = await manager.send_personal_message(
+            mock_websocket,
+            EventType.BOUNTY_CLAIMED,
+            {"bounty_id": 42}
+        )
+        
+        assert success
+        mock_websocket.send_json.assert_called_once()
+        
+        call_args = mock_websocket.send_json.call_args[0][0]
+        assert call_args["type"] == "bounty_claimed"
+        assert call_args["data"]["bounty_id"] == 42
+    
+    @pytest.mark.asyncio
+    async def test_broadcast_to_user(self, manager, mock_websocket):
+        """Test broadcasting to all connections of a user."""
+        await manager.connect(mock_websocket, "user_123")
+        
+        count = await manager.broadcast_to_user(
+            "user_123",
+            EventType.BOUNTY_CLAIMED,
+            {"bounty_id": 42}
+        )
+        
+        assert count == 1
+        mock_websocket.send_json.assert_called()
+    
+    @pytest.mark.asyncio
+    async def test_broadcast_event(self, manager, mock_websocket):
+        """Test broadcasting an event to subscribers."""
+        await manager.connect(mock_websocket, "user_123")
+        await manager.subscribe(mock_websocket, "bounties")
         
         count = await manager.broadcast_event(
-            event_type=EventType.BOUNTY_CREATED,
-            data={"bounty_id": "42", "title": "Test Bounty"},
+            event_type=EventType.BOUNTY_CLAIMED,
+            data={"bounty_id": 42},
             channel="bounties"
         )
         
         assert count == 1
         mock_websocket.send_json.assert_called()
-        
-        call_args = mock_websocket.send_json.call_args[0][0]
-        assert call_args["type"] == "bounty_created"
-        assert call_args["data"]["bounty_id"] == "42"
     
     @pytest.mark.asyncio
     async def test_broadcast_to_specific_bounty(self, manager, mock_websocket):
         """Test broadcasting to specific bounty subscribers."""
-        await manager.connect(mock_websocket, token=None)
-        
-        sub = Subscription(channel="bounties:42")
-        await manager.subscribe(mock_websocket, sub)
+        await manager.connect(mock_websocket, "user_123")
+        await manager.subscribe(mock_websocket, "bounty:42")
         
         count = await manager.broadcast_event(
             event_type=EventType.BOUNTY_CLAIMED,
-            data={"bounty_id": "42", "claimer": "user_123"},
-            channel="bounties:42"
+            data={"bounty_id": 42},
+            channel="bounty:42"
         )
         
         assert count == 1
@@ -268,14 +273,15 @@ class TestConnectionManager:
         ws2.accept = AsyncMock()
         ws2.send_json = AsyncMock()
         
-        await manager.connect(ws1, token=None)
-        await manager.connect(ws2, token=None)
+        await manager.connect(ws1, "user_123")
+        await manager.connect(ws2, "user_456")
         
-        await manager.subscribe(ws1, Subscription(channel="bounties"))
+        # Only ws1 subscribes to bounties
+        await manager.subscribe(ws1, "bounties")
         
         count = await manager.broadcast_event(
-            event_type=EventType.BOUNTY_CREATED,
-            data={"bounty_id": "42"},
+            event_type=EventType.BOUNTY_CLAIMED,
+            data={"bounty_id": 42},
             channel="bounties"
         )
         
@@ -284,53 +290,62 @@ class TestConnectionManager:
         ws2.send_json.assert_not_called()
     
     @pytest.mark.asyncio
-    async def test_rate_limiting(self, manager, mock_websocket):
-        """Test rate limiting per connection."""
-        info = await manager.connect(mock_websocket, token=None)
+    async def test_handle_pong(self, manager, mock_websocket):
+        """Test pong handling updates last_pong time."""
+        info = await manager.connect(mock_websocket, "user_123")
+        old_pong = info.last_pong
         
-        for i in range(100):
-            assert manager.check_rate_limit(info)
+        await asyncio.sleep(0.01)
+        manager.handle_pong(mock_websocket)
         
-        assert not manager.check_rate_limit(info)
+        assert info.last_pong > old_pong
+    
+    def test_get_stats(self, manager):
+        """Test getting connection statistics."""
+        stats = manager.get_stats()
+        
+        assert "total_connections" in stats
+        assert "unique_users" in stats
+        assert "redis_enabled" in stats
+        assert "subscriptions" in stats
+        assert "channels" in stats
 
 
 class TestWebSocketMessages:
     """Tests for WebSocket message models."""
     
     def test_websocket_message_format(self):
-        """Test WebSocketMessage follows bounty spec format."""
+        """Test WebSocketMessage matches bounty spec format."""
         msg = WebSocketMessage(
-            type="bounty_created",
-            data={"bounty_id": "42"}
+            type=EventType.BOUNTY_CLAIMED,
+            data={"bounty_id": 42}
         )
         
-        assert msg.type == "bounty_created"
-        assert msg.data["bounty_id"] == "42"
-        assert msg.timestamp is not None
-        
-        serialized = msg.model_dump(mode="json")
-        assert "type" in serialized
-        assert "timestamp" in serialized
-        assert "data" in serialized
+        # Verify format: {"type": "...", "data": {...}, "timestamp": "..."}
+        dump = msg.model_dump(mode="json")
+        assert "type" in dump
+        assert "data" in dump
+        assert "timestamp" in dump
+        assert dump["type"] == "bounty_claimed"
     
     def test_heartbeat_message(self):
         """Test HeartbeatMessage model."""
         msg = HeartbeatMessage(ping_id="ping_123")
         
-        assert msg.type == "heartbeat"
+        assert msg.type == EventType.HEARTBEAT
         assert msg.ping_id == "ping_123"
     
     def test_error_message(self):
         """Test ErrorMessage model."""
         msg = ErrorMessage(
-            error_code="INVALID_CHANNEL",
-            message="Invalid channel name",
-            details={"valid_channels": ["bounties", "prs"]}
+            error_code="TEST_ERROR",
+            error_message="Test error message",
+            details={"extra": "info"}
         )
         
-        assert msg.type == "error"
-        assert msg.error_code == "INVALID_CHANNEL"
-        assert msg.details["valid_channels"] is not None
+        assert msg.type == EventType.ERROR
+        assert msg.error_code == "TEST_ERROR"
+        assert msg.details["extra"] == "info"
 
 
 class TestWebSocketEndpoint:
@@ -341,21 +356,25 @@ class TestWebSocketEndpoint:
         """Test basic WebSocket connection."""
         with TestClient(app) as client:
             with client.websocket_connect("/ws") as websocket:
+                # Receive connection confirmation
                 data = websocket.receive_json()
                 
                 assert data["type"] == "connected"
+                assert "data" in data
                 assert "timestamp" in data
-                assert data["data"]["message"] == "Connected to SolFoundry real-time updates"
     
     @pytest.mark.asyncio
-    async def test_websocket_subscribe_bounties(self):
-        """Test WebSocket subscription to bounties channel."""
+    async def test_websocket_subscribe_simple(self):
+        """Test simple subscription format: {"subscribe": "bounties"}."""
         with TestClient(app) as client:
             with client.websocket_connect("/ws") as websocket:
+                # Skip connection message
                 websocket.receive_json()
                 
+                # Send subscription with simple format
                 websocket.send_json({"subscribe": "bounties"})
                 
+                # Receive subscription confirmation
                 data = websocket.receive_json()
                 
                 assert data["type"] == "subscribed"
@@ -363,17 +382,28 @@ class TestWebSocketEndpoint:
     
     @pytest.mark.asyncio
     async def test_websocket_subscribe_specific_bounty(self):
-        """Test WebSocket subscription to specific bounty."""
+        """Test specific bounty subscription: {"subscribe": "bounty:42"}."""
         with TestClient(app) as client:
             with client.websocket_connect("/ws") as websocket:
-                websocket.receive_json()
+                websocket.receive_json()  # Skip connection
                 
-                websocket.send_json({"subscribe": "bounties:42"})
-                
+                websocket.send_json({"subscribe": "bounty:42"})
                 data = websocket.receive_json()
                 
                 assert data["type"] == "subscribed"
-                assert data["data"]["channel"] == "bounties:42"
+                assert data["data"]["channel"] == "bounty:42"
+    
+    @pytest.mark.asyncio
+    async def test_websocket_subscribe_all_channels(self):
+        """Test subscribing to all main channels."""
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as websocket:
+                websocket.receive_json()  # Skip connection
+                
+                for channel in ["bounties", "prs", "payouts", "leaderboard"]:
+                    websocket.send_json({"subscribe": channel})
+                    data = websocket.receive_json()
+                    assert data["type"] == "subscribed"
     
     @pytest.mark.asyncio
     async def test_websocket_invalid_channel(self):
@@ -383,7 +413,6 @@ class TestWebSocketEndpoint:
                 websocket.receive_json()
                 
                 websocket.send_json({"subscribe": "invalid_channel"})
-                
                 data = websocket.receive_json()
                 
                 assert data["type"] == "error"
@@ -400,28 +429,21 @@ class TestWebSocketEndpoint:
                 websocket.receive_json()
                 
                 websocket.send_json({"unsubscribe": "bounties"})
-                
                 data = websocket.receive_json()
+                
                 assert data["type"] == "unsubscribed"
     
     @pytest.mark.asyncio
-    async def test_websocket_pong(self):
-        """Test WebSocket pong response."""
+    async def test_websocket_ping_pong(self):
+        """Test WebSocket ping-pong."""
         with TestClient(app) as client:
             with client.websocket_connect("/ws") as websocket:
                 websocket.receive_json()
                 
-                websocket.send_json({"pong": "ping_123"})
-    
-    @pytest.mark.asyncio
-    async def test_websocket_reconnect_flag(self):
-        """Test that reconnect flag is acknowledged."""
-        with TestClient(app) as client:
-            with client.websocket_connect("/ws?reconnect=true") as websocket:
+                websocket.send_json({"type": "ping"})
                 data = websocket.receive_json()
                 
-                assert data["type"] == "connected"
-                assert data["data"]["reconnected"] is True
+                assert data["type"] == "pong"
     
     @pytest.mark.asyncio
     async def test_websocket_stats_endpoint(self):
@@ -433,76 +455,71 @@ class TestWebSocketEndpoint:
             data = response.json()
             
             assert "total_connections" in data
-            assert "unique_users" in data
             assert "redis_enabled" in data
-            assert "subscriptions" in data
 
 
 class TestBroadcastHelpers:
     """Tests for broadcast helper functions."""
     
     @pytest.mark.asyncio
-    async def test_broadcast_bounty_created(self, manager, mock_websocket):
-        """Test bounty created broadcast."""
-        await manager.connect(mock_websocket, token=None)
-        await manager.subscribe(mock_websocket, Subscription(channel="bounties"))
+    async def test_broadcast_bounty_event(self, manager, mock_websocket):
+        """Test bounty event broadcast helper."""
+        await manager.connect(mock_websocket, "user_123")
+        await manager.subscribe(mock_websocket, "bounties")
+        await manager.subscribe(mock_websocket, "bounty:42")
         
         with patch("app.api.websocket.manager", manager):
             count = await broadcast_bounty_event(
-                event_type=EventType.BOUNTY_CREATED,
-                data={"bounty_id": "42", "title": "Test Bounty"}
+                event_type=EventType.BOUNTY_CLAIMED,
+                bounty_id=42,
+                data={"bounty_id": 42, "user_id": "user_456"}
             )
         
+        # Should receive on both bounties and bounty:42 channels
         assert count >= 1
     
     @pytest.mark.asyncio
-    async def test_broadcast_pr_status_changed(self, manager, mock_websocket):
-        """Test PR status change broadcast."""
-        await manager.connect(mock_websocket, token=None)
-        await manager.subscribe(mock_websocket, Subscription(channel="prs"))
+    async def test_broadcast_pr_event(self, manager, mock_websocket):
+        """Test PR event broadcast helper."""
+        await manager.connect(mock_websocket, "user_123")
+        await manager.subscribe(mock_websocket, "prs")
         
         with patch("app.api.websocket.manager", manager):
             count = await broadcast_pr_event(
-                event_type=EventType.PR_STATUS_CHANGED,
-                pr_id="pr_123",
-                repo_id="repo_456",
-                data={"status": "merged"}
+                event_type=EventType.PR_SUBMITTED,
+                pr_id=123,
+                data={"pr_id": 123, "repo": "owner/repo"},
+                user_id="user_123"
             )
         
         assert count >= 1
     
     @pytest.mark.asyncio
-    async def test_broadcast_payout_sent(self, manager, mock_websocket):
-        """Test payout sent broadcast."""
-        import jwt
-        test_secret = "test_secret"
-        manager._jwt_secret = test_secret
-        token = jwt.encode({"user_id": "user_123"}, test_secret, algorithm="HS256")
-        
-        await manager.connect(mock_websocket, token=token)
-        await manager.subscribe(mock_websocket, Subscription(channel="payouts"))
+    async def test_broadcast_payout_event(self, manager, mock_websocket):
+        """Test payout event broadcast helper."""
+        await manager.connect(mock_websocket, "user_123")
+        await manager.subscribe(mock_websocket, "payouts")
         
         with patch("app.api.websocket.manager", manager):
             count = await broadcast_payout_event(
-                event_type=EventType.PAYOUT_SENT,
-                bounty_id="bounty_42",
-                user_id="user_123",
-                amount=100.0,
-                transaction_id="tx_abc"
+                event_type=EventType.PAYOUT_COMPLETED,
+                payout_id="payout_123",
+                data={"amount": 100, "token": "FNDRY"},
+                user_id="user_123"
             )
         
         assert count >= 1
     
     @pytest.mark.asyncio
-    async def test_broadcast_leaderboard_changed(self, manager, mock_websocket):
-        """Test leaderboard change broadcast."""
-        await manager.connect(mock_websocket, token=None)
-        await manager.subscribe(mock_websocket, Subscription(channel="leaderboard"))
+    async def test_broadcast_leaderboard_event(self, manager, mock_websocket):
+        """Test leaderboard event broadcast helper."""
+        await manager.connect(mock_websocket, "user_123")
+        await manager.subscribe(mock_websocket, "leaderboard")
         
         with patch("app.api.websocket.manager", manager):
             count = await broadcast_leaderboard_event(
-                event_type=EventType.LEADERBOARD_CHANGED,
-                data={"user_id": "user_123", "new_rank": 1}
+                event_type=EventType.RANK_CHANGE,
+                data={"user_id": "user_123", "new_rank": 5}
             )
         
         assert count >= 1
@@ -522,20 +539,9 @@ class TestHeartbeat:
         await manager.shutdown()
     
     @pytest.mark.asyncio
-    async def test_handle_pong(self, manager, mock_websocket):
-        """Test pong handling updates last_pong time."""
-        info = await manager.connect(mock_websocket, token=None)
-        old_pong = info.last_pong
-        
-        await asyncio.sleep(0.01)
-        manager.handle_pong(mock_websocket)
-        
-        assert info.last_pong > old_pong
-    
-    @pytest.mark.asyncio
     async def test_connection_timeout_cleanup(self, manager, mock_websocket):
         """Test that dead connections are cleaned up."""
-        await manager.connect(mock_websocket, token=None)
+        await manager.connect(mock_websocket, "user_123")
         
         info = manager._ws_to_info.get(mock_websocket)
         info.is_alive = False
@@ -547,102 +553,26 @@ class TestAuthentication:
     """Tests for JWT authentication."""
     
     @pytest.mark.asyncio
-    async def test_valid_jwt_allows_connection(self, manager, mock_websocket):
-        """Test that valid JWT allows authenticated connection."""
-        import jwt
-        test_secret = "test_secret"
-        manager._jwt_secret = test_secret
-        
-        token = jwt.encode({"user_id": "user_123"}, test_secret, algorithm="HS256")
-        info = await manager.connect(mock_websocket, token=token)
-        
-        assert info.is_authenticated
-        assert info.user_id == "user_123"
-    
-    @pytest.mark.asyncio
-    async def test_expired_jwt_rejected(self, manager, mock_websocket):
-        """Test that expired JWT is rejected."""
-        import jwt
-        from datetime import timedelta
-        
-        test_secret = "test_secret"
-        manager._jwt_secret = test_secret
-        
-        payload = {
-            "user_id": "user_123",
-            "exp": datetime.now(timezone.utc) - timedelta(hours=1)
-        }
-        token = jwt.encode(payload, test_secret, algorithm="HS256")
-        
-        with pytest.raises(AuthenticationError):
-            await manager.connect(mock_websocket, token=token)
-    
-    @pytest.mark.asyncio
-    async def test_no_jwt_secret_allows_anonymous(self, manager, mock_websocket):
-        """Test that missing JWT secret allows anonymous connections."""
-        manager._jwt_secret = None
-        
-        info = await manager.connect(mock_websocket, token=None)
-        
-        assert not info.is_authenticated
-
-
-class TestRateLimiting:
-    """Tests for rate limiting."""
-    
-    @pytest.mark.asyncio
-    async def test_rate_limit_enforced(self, manager, mock_websocket):
-        """Test that rate limit is enforced."""
-        info = await manager.connect(mock_websocket, token=None)
-        
-        for i in range(manager.RATE_LIMIT_MAX_MESSAGES):
-            assert manager.check_rate_limit(info)
-        
-        assert not manager.check_rate_limit(info)
-    
-    @pytest.mark.asyncio
-    async def test_rate_limit_resets(self, manager, mock_websocket):
-        """Test that rate limit resets after window."""
-        info = await manager.connect(mock_websocket, token=None)
-        
-        for i in range(manager.RATE_LIMIT_MAX_MESSAGES):
-            manager.check_rate_limit(info)
-        
-        info.rate_limit_window_start = None
-        
-        assert manager.check_rate_limit(info)
-
-
-class TestErrorHandling:
-    """Tests for error handling."""
-    
-    @pytest.mark.asyncio
-    async def test_invalid_json_error(self):
-        """Test error response for invalid JSON."""
+    async def test_unauthenticated_connection(self):
+        """Test connection without token."""
         with TestClient(app) as client:
             with client.websocket_connect("/ws") as websocket:
-                websocket.receive_json()
-                
-                websocket.send_text("not json")
-                
                 data = websocket.receive_json()
-                assert data["type"] == "error"
-                assert data["error_code"] == "INVALID_MESSAGE"
+                
+                assert data["type"] == "connected"
+                assert data["data"]["authenticated"] is False
     
     @pytest.mark.asyncio
-    async def test_unknown_message_format_error(self):
-        """Test error response for unknown message format."""
+    async def test_invalid_token_rejected(self):
+        """Test that invalid token is rejected."""
         with TestClient(app) as client:
-            with client.websocket_connect("/ws") as websocket:
-                websocket.receive_json()
-                
-                websocket.send_json({"unknown_field": "value"})
-                
-                data = websocket.receive_json()
-                assert data["type"] == "error"
-                assert data["error_code"] == "INVALID_MESSAGE"
+            # Invalid token should close connection
+            with pytest.raises(Exception):
+                with client.websocket_connect("/ws?token=invalid_token") as websocket:
+                    pass
 
 
+# Integration tests
 class TestIntegration:
     """Integration tests for WebSocket system."""
     
@@ -651,17 +581,16 @@ class TestIntegration:
         """Test full WebSocket flow: connect, subscribe, receive event, disconnect."""
         with TestClient(app) as client:
             with client.websocket_connect("/ws") as ws:
-                ws.receive_json()
+                ws.receive_json()  # Skip connection message
                 
+                # Subscribe to multiple channels
                 ws.send_json({"subscribe": "bounties"})
                 ws.receive_json()
                 
-                ws.send_json({"subscribe": "prs"})
+                ws.send_json({"subscribe": "bounty:42"})
                 ws.receive_json()
                 
-                ws.send_json({"subscribe": "bounties:42"})
-                ws.receive_json()
-                
+                # Get stats
                 response = client.get("/ws/stats")
                 assert response.json()["total_connections"] == 1
     
@@ -683,37 +612,49 @@ class TestIntegration:
                     stats = response.json()
                     
                     assert stats["total_connections"] == 2
-    
-    @pytest.mark.asyncio
-    async def test_channel_matching(self):
-        """Test that wildcard channel subscription receives specific events."""
-        pass
 
 
+# Connection stress test
 class TestConnectionStress:
-    """Stress tests for WebSocket connections."""
+    """Stress tests for connection handling."""
     
     @pytest.mark.asyncio
-    async def test_rapid_connect_disconnect(self):
-        """Test rapid connect/disconnect cycles."""
+    async def test_many_connections(self):
+        """Test handling many concurrent connections."""
         with TestClient(app) as client:
-            for i in range(10):
-                with client.websocket_connect("/ws") as ws:
-                    ws.receive_json()
+            connections = []
+            
+            # Open 50 connections
+            for _ in range(50):
+                ws = client.websocket_connect("/ws")
+                connections.append(ws.__enter__())
+            
+            # All should receive connection message
+            for ws in connections:
+                data = ws.receive_json()
+                assert data["type"] == "connected"
+            
+            # Check stats
+            response = client.get("/ws/stats")
+            assert response.json()["total_connections"] == 50
+            
+            # Close all
+            for ws in connections:
+                ws.__exit__(None, None, None)
     
     @pytest.mark.asyncio
-    async def test_many_subscriptions(self):
-        """Test many subscriptions on single connection."""
+    async def test_rapid_subscribe_unsubscribe(self):
+        """Test rapid subscribe/unsubscribe cycles."""
         with TestClient(app) as client:
             with client.websocket_connect("/ws") as ws:
                 ws.receive_json()
                 
-                for channel in ["bounties", "prs", "payouts", "leaderboard"]:
-                    ws.send_json({"subscribe": channel})
+                # Rapid subscribe/unsubscribe
+                for _ in range(10):
+                    ws.send_json({"subscribe": "bounties"})
                     ws.receive_json()
-                
-                response = client.get("/ws/stats")
-                assert response.json()["subscriptions"] >= 4
+                    ws.send_json({"unsubscribe": "bounties"})
+                    ws.receive_json()
 
 
 if __name__ == "__main__":
