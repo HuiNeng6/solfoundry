@@ -259,7 +259,7 @@ async def submit_solution(bounty_id: str, data: SubmissionCreate) -> SubmissionR
     # Audit log
     audit_log(
         action=AuditAction.BOUNTY_CLAIMED,
-        actor=data.contributor_id or "unknown",
+        actor=data.submitted_by or "unknown",
         resource="bounty",
         resource_id=bounty_id,
     )

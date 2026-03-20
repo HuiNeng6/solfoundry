@@ -7,8 +7,10 @@ delete, submit solution, list submissions, and edge cases.
 from collections import deque
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 
 from app.api.bounties import router as bounties_router
 from app.models.bounty import (
@@ -18,6 +20,8 @@ from app.models.bounty import (
     SubmissionCreate,
     VALID_STATUS_TRANSITIONS,
 )
+from app.core.errors import AppException
+from app.core.logging_config import get_correlation_id
 from app.services import bounty_service
 
 # ---------------------------------------------------------------------------
@@ -26,6 +30,54 @@ from app.services import bounty_service
 
 _test_app = FastAPI()
 _test_app.include_router(bounties_router)
+
+
+@_test_app.exception_handler(AppException)
+async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
+    """Handle custom application exceptions."""
+    correlation_id = get_correlation_id() or "unknown"
+    response = exc.to_response(
+        correlation_id=correlation_id,
+        path=request.url.path,
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=response.model_dump(mode="json", exclude_none=True),
+        headers={"X-Correlation-ID": correlation_id, **(exc.headers or {})},
+    )
+
+
+@_test_app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Handle FastAPI request validation errors."""
+    from app.core.errors import ValidationException, ErrorDetail
+    
+    correlation_id = get_correlation_id() or "unknown"
+    
+    details = [
+        ErrorDetail(
+            field=".".join(str(loc) for loc in error["loc"]),
+            message=error["msg"],
+            code=error["type"],
+        )
+        for error in exc.errors()
+    ]
+    
+    validation_exc = ValidationException(
+        message="Validation failed",
+        details=details,
+    )
+    
+    response = validation_exc.to_response(
+        correlation_id=correlation_id,
+        path=request.url.path,
+    )
+    
+    return JSONResponse(
+        status_code=422,
+        content=response.model_dump(mode="json", exclude_none=True),
+        headers={"X-Correlation-ID": correlation_id},
+    )
 
 
 @_test_app.get("/health")
@@ -269,6 +321,7 @@ class TestListBounties:
             "created_by",
             "submission_count",
             "created_at",
+            "github_issue_url",
         }
         assert set(item.keys()) == expected_keys
 
@@ -366,7 +419,8 @@ class TestGetBounty:
     def test_get_not_found(self):
         resp = client.get("/api/bounties/nonexistent-id")
         assert resp.status_code == 404
-        assert "not found" in resp.json()["detail"].lower()
+        data = resp.json()
+        assert "not found" in data.get("message", data.get("detail", "")).lower()
 
     def test_get_includes_submissions(self):
         b = _create_bounty()
@@ -513,7 +567,8 @@ class TestUpdateBounty:
         bid = b["id"]
         resp = client.patch(f"/api/bounties/{bid}", json={"status": "completed"})
         assert resp.status_code == 400
-        assert "Invalid status transition" in resp.json()["detail"]
+        data = resp.json()
+        assert "Invalid status transition" in data.get("message", data.get("detail", ""))
 
     def test_invalid_open_to_paid(self):
         b = _create_bounty()
@@ -724,7 +779,8 @@ class TestSubmitSolution:
             f"/api/bounties/{bid}/submit", json={"pr_url": url, "submitted_by": "bob"}
         )
         assert resp.status_code == 400
-        assert "already been submitted" in resp.json()["detail"]
+        data = resp.json()
+        assert "already been submitted" in data.get("message", data.get("detail", ""))
 
     def test_submit_on_completed_bounty_rejected(self):
         b = _create_bounty()
@@ -739,7 +795,8 @@ class TestSubmitSolution:
             },
         )
         assert resp.status_code == 400
-        assert "not accepting" in resp.json()["detail"]
+        data = resp.json()
+        assert "not accepting" in data.get("message", data.get("detail", ""))
 
     def test_submit_on_paid_bounty_rejected(self):
         b = _create_bounty()

@@ -65,7 +65,6 @@ async def create_contributor(data: ContributorCreate):
         resource_id=contributor.id,
         metadata={
             "username": data.username,
-            "wallet_address": data.wallet_address,
         },
     )
 

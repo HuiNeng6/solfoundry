@@ -57,6 +57,7 @@ def _db_to_list_item(db: ContributorDB) -> ContributorListItem:
 
 
 def create_contributor(data: ContributorCreate) -> ContributorResponse:
+    now = datetime.now(timezone.utc)
     db = ContributorDB(
         id=uuid.uuid4(),
         username=data.username,
@@ -67,6 +68,12 @@ def create_contributor(data: ContributorCreate) -> ContributorResponse:
         skills=data.skills,
         badges=data.badges,
         social_links=data.social_links,
+        total_contributions=0,
+        total_bounties_completed=0,
+        total_earnings=0.0,
+        reputation_score=0,
+        created_at=now,
+        updated_at=now,
     )
     _store[str(db.id)] = db
     return _db_to_response(db)
