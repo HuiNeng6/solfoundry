@@ -135,9 +135,9 @@ async def list_agents(
     
     if available is not None:
         if available:
-            conditions.append(and_(Agent.is_active == True, Agent.availability == "available"))
+            conditions.append(and_(Agent.is_active.is_(True), Agent.availability == "available"))
         else:
-            conditions.append(and_(Agent.is_active == False, Agent.availability != "available"))
+            conditions.append(and_(Agent.is_active.is_(False), Agent.availability != "available"))
     
     # Build base query
     base_query = select(Agent)
