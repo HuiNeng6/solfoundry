@@ -23,7 +23,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 
 from fastapi import WebSocket
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 # Optional Redis support for distributed deployments
 try:

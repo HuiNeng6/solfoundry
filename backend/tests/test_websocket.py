@@ -10,9 +10,7 @@ This module tests:
 
 import pytest
 import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 from fastapi import FastAPI, WebSocket
