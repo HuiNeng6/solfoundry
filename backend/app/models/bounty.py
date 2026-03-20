@@ -1,4 +1,4 @@
-"""Bounty database and Pydantic models.
+﻿"""Bounty database and Pydantic models.
 
 This module defines the data models for the bounty system including
 database models (ORM) and API models (Pydantic schemas).
@@ -13,10 +13,51 @@ from typing import Optional, List
 from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import Column, String, DateTime, JSON, Float, Integer, Text, Index
-from sqlalchemy.dialects.postgresql import UUID, TSVECTOR
+from sqlalchemy import Column, String, DateTime, JSON, Float, Integer, Text, Index, TypeDecorator
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, TSVECTOR
 
 from app.database import Base
+
+
+class GUID(TypeDecorator):
+    """Platform-independent GUID type for SQLite compatibility."""
+    impl = String(32)
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(PG_GUID())
+        else:
+            return dialect.type_descriptor(String(32))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        elif dialect.name == "postgresql":
+            return value
+        else:
+            if isinstance(value, str):
+                return value.replace("-", "")
+            else:
+                return value.hex.replace("-", "")
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        else:
+            return str(value)
+
+
+class SearchVectorColumn(TypeDecorator):
+    """Type decorator for TSVECTOR that falls back to Text for SQLite."""
+    impl = Text
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            return dialect.type_descriptor(TSVECTOR())
+        else:
+            return dialect.type_descriptor(Text())
 
 
 # Constants for validation
@@ -66,7 +107,7 @@ class BountyDB(Base):
     """
     __tablename__ = "bounties"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=False)
     tier = Column(Integer, nullable=False, default=1)
@@ -79,10 +120,10 @@ class BountyDB(Base):
     github_issue_url = Column(String(500), nullable=True)
     github_issue_number = Column(Integer, nullable=True)
     github_repo = Column(String(255), nullable=True)
-    claimant_id = Column(UUID(as_uuid=True), nullable=True)
-    winner_id = Column(UUID(as_uuid=True), nullable=True)
+    claimant_id = Column(GUID(), nullable=True)
+    winner_id = Column(GUID(), nullable=True)
     popularity = Column(Integer, default=0, nullable=False)
-    search_vector = Column(TSVECTOR, nullable=True)
+    search_vector = Column(SearchVectorColumn(), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

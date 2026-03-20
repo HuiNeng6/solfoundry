@@ -30,10 +30,8 @@ class WebhookEventLogDB(Base):
     processed_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
-        index=True
     )
 
     __table_args__ = (
         Index('ix_webhook_event_logs_event_type', event_type),
-        Index('ix_webhook_event_logs_processed_at', processed_at),
     )
