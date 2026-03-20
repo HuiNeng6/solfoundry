@@ -48,12 +48,14 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
 
 
 @_test_app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
     """Handle FastAPI request validation errors."""
     from app.core.errors import ValidationException, ErrorDetail
-    
+
     correlation_id = get_correlation_id() or "unknown"
-    
+
     details = [
         ErrorDetail(
             field=".".join(str(loc) for loc in error["loc"]),
@@ -62,17 +64,17 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         )
         for error in exc.errors()
     ]
-    
+
     validation_exc = ValidationException(
         message="Validation failed",
         details=details,
     )
-    
+
     response = validation_exc.to_response(
         correlation_id=correlation_id,
         path=request.url.path,
     )
-    
+
     return JSONResponse(
         status_code=422,
         content=response.model_dump(mode="json", exclude_none=True),
@@ -568,7 +570,9 @@ class TestUpdateBounty:
         resp = client.patch(f"/api/bounties/{bid}", json={"status": "completed"})
         assert resp.status_code == 400
         data = resp.json()
-        assert "Invalid status transition" in data.get("message", data.get("detail", ""))
+        assert "Invalid status transition" in data.get(
+            "message", data.get("detail", "")
+        )
 
     def test_invalid_open_to_paid(self):
         b = _create_bounty()
