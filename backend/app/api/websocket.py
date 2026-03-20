@@ -40,7 +40,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, status
 from app.services.websocket_manager import (
     manager,
     EventType,
-    Channel,
     ErrorMessage,
 )
 
@@ -202,7 +201,7 @@ async def websocket_endpoint(
         return
     
     # Connect to the manager
-    info = await manager.connect(websocket, user_id or "anonymous", authenticated=authenticated)
+    await manager.connect(websocket, user_id or "anonymous", authenticated=authenticated)
     
     # Send connection confirmation (matching bounty spec format)
     await websocket.send_json({

@@ -40,13 +40,32 @@ _oauth_states: Dict[str, Dict] = {}
 _auth_challenges: Dict[str, Dict] = {}
 
 
-class AuthError(Exception): pass
-class GitHubOAuthError(AuthError): pass
-class WalletVerificationError(AuthError): pass
-class TokenExpiredError(AuthError): pass
-class InvalidTokenError(AuthError): pass
-class InvalidStateError(AuthError): pass
-class InvalidNonceError(AuthError): pass
+class AuthError(Exception):
+    pass
+
+
+class GitHubOAuthError(AuthError):
+    pass
+
+
+class WalletVerificationError(AuthError):
+    pass
+
+
+class TokenExpiredError(AuthError):
+    pass
+
+
+class InvalidTokenError(AuthError):
+    pass
+
+
+class InvalidStateError(AuthError):
+    pass
+
+
+class InvalidNonceError(AuthError):
+    pass
 
 
 def _user_to_response(user: User) -> UserResponse:
