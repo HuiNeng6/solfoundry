@@ -38,8 +38,14 @@ Contributors are users who complete bounties on SolFoundry. Each contributor has
 """
 
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query, status
-from app.models.contributor import ContributorCreate, ContributorResponse, ContributorListResponse, ContributorUpdate
+
+from fastapi import APIRouter, HTTPException, Query
+from app.models.contributor import (
+    ContributorCreate,
+    ContributorResponse,
+    ContributorListResponse,
+    ContributorUpdate,
+)
 from app.services import contributor_service
 
 router = APIRouter(prefix="/api/contributors", tags=["contributors"])
@@ -102,26 +108,18 @@ GET /api/contributors?badges=tier-3-veteran&limit=50
 )
 async def list_contributors(
     search: Optional[str] = Query(
-        None,
-        description="Search by username or display name",
-        example="sol"
+        None, description="Search by username or display name"
     ),
-    skills: Optional[str] = Query(
-        None,
-        description="Comma-separated skill filter",
-        example="rust,solana"
-    ),
-    badges: Optional[str] = Query(
-        None,
-        description="Comma-separated badge filter",
-        example="tier-1-veteran"
-    ),
-    skip: int = Query(0, ge=0, description="Pagination offset"),
-    limit: int = Query(20, ge=1, le=100, description="Results per page"),
+    skills: Optional[str] = Query(None, description="Comma-separated skill filter"),
+    badges: Optional[str] = Query(None, description="Comma-separated badge filter"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
 ):
     skill_list = skills.split(",") if skills else None
     badge_list = badges.split(",") if badges else None
-    return contributor_service.list_contributors(search=search, skills=skill_list, badges=badge_list, skip=skip, limit=limit)
+    return contributor_service.list_contributors(
+        search=search, skills=skill_list, badges=badge_list, skip=skip, limit=limit
+    )
 
 
 @router.post(
@@ -188,7 +186,9 @@ Create a new contributor profile.
 )
 async def create_contributor(data: ContributorCreate):
     if contributor_service.get_contributor_by_username(data.username):
-        raise HTTPException(status_code=409, detail=f"Username '{data.username}' already exists")
+        raise HTTPException(
+            status_code=409, detail=f"Username '{data.username}' already exists"
+        )
     return contributor_service.create_contributor(data)
 
 
