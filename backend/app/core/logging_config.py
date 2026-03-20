@@ -362,6 +362,24 @@ def setup_logging() -> None:
                 "level": "WARNING",
                 "propagate": True,
             },
+            # Dedicated loggers for separate streams
+            "access": {
+                "level": "INFO",
+                "handlers": ["file_access"] if should_log_to_file() else [],
+                "propagate": False,
+            },
+            "error": {
+                "level": "ERROR",
+                "handlers": ["console_error", "file_error"]
+                if should_log_to_file()
+                else ["console_error"],
+                "propagate": False,
+            },
+            "audit": {
+                "level": "INFO",
+                "handlers": ["file_audit"] if should_log_to_file() else [],
+                "propagate": False,
+            },
         },
     }
 
@@ -390,12 +408,16 @@ def get_access_logger() -> logging.Logger:
 
 def get_error_logger() -> logging.Logger:
     """Get the error logger for exception logging."""
-    return logging.getLogger("error")
+    logger = logging.getLogger("error")
+    logger.propagate = False
+    return logger
 
 
 def get_audit_logger() -> logging.Logger:
     """Get the audit logger for security-sensitive operations."""
-    return logging.getLogger("audit")
+    logger = logging.getLogger("audit")
+    logger.propagate = False
+    return logger
 
 
 def cleanup_old_logs(
