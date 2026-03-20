@@ -26,15 +26,13 @@ import json
 from typing import Optional
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query, status
-from pydantic import BaseModel, Field, ValidationError
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 from app.services.websocket_manager import (
     manager,
     EventType,
     SubscriptionScope,
     Subscription,
-    WebSocketMessage,
     ErrorMessage,
 )
 
