@@ -30,6 +30,7 @@ logger = get_logger(__name__)
 
 class HealthStatus(str, Enum):
     """Health check status values."""
+
     HEALTHY = "healthy"
     UNHEALTHY = "unhealthy"
     DEGRADED = "degraded"
@@ -37,26 +38,31 @@ class HealthStatus(str, Enum):
 
 class DependencyStatus(BaseModel):
     """Status of a single dependency."""
+
     name: str = Field(..., description="Dependency name")
     status: HealthStatus = Field(..., description="Current status")
-    latency_ms: Optional[float] = Field(None, description="Response latency in milliseconds")
+    latency_ms: Optional[float] = Field(
+        None, description="Response latency in milliseconds"
+    )
     error: Optional[str] = Field(None, description="Error message if unhealthy")
     details: Optional[Dict[str, Any]] = Field(None, description="Additional details")
 
 
 class HealthCheckResponse(BaseModel):
     """Response model for health check endpoints."""
+
     status: HealthStatus = Field(..., description="Overall health status")
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        description="When the check was performed"
+        description="When the check was performed",
     )
     version: str = Field(default="0.1.0", description="Application version")
     dependencies: Optional[List[DependencyStatus]] = Field(
-        None,
-        description="Status of individual dependencies"
+        None, description="Status of individual dependencies"
     )
-    uptime_seconds: Optional[float] = Field(None, description="Application uptime in seconds")
+    uptime_seconds: Optional[float] = Field(
+        None, description="Application uptime in seconds"
+    )
 
 
 # Application start time for uptime calculation
@@ -70,20 +76,21 @@ def get_uptime_seconds() -> float:
 
 async def check_database() -> DependencyStatus:
     """Check database connectivity.
-    
+
     Attempts a simple query to verify database connection is working.
     """
     import time
+
     start_time = time.time()
-    
+
     try:
         async with async_session_factory() as session:
             # Simple query to verify connection
             result = await session.execute(text("SELECT 1"))
             result.fetchone()
-        
+
         latency = (time.time() - start_time) * 1000
-        
+
         return DependencyStatus(
             name="database",
             status=HealthStatus.HEALTHY,
@@ -92,7 +99,7 @@ async def check_database() -> DependencyStatus:
     except Exception as exc:
         latency = (time.time() - start_time) * 1000
         logger.error(f"Database health check failed: {exc}")
-        
+
         return DependencyStatus(
             name="database",
             status=HealthStatus.UNHEALTHY,
@@ -103,26 +110,27 @@ async def check_database() -> DependencyStatus:
 
 async def check_redis() -> Optional[DependencyStatus]:
     """Check Redis connectivity.
-    
+
     Returns None if Redis is not configured.
     """
     redis_url = os.getenv("REDIS_URL")
     if not redis_url:
         return None
-    
+
     import time
+
     start_time = time.time()
-    
+
     try:
         # Try to import redis and check connection
         import redis.asyncio as redis
-        
+
         client = redis.from_url(redis_url)
         await client.ping()
         await client.close()
-        
+
         latency = (time.time() - start_time) * 1000
-        
+
         return DependencyStatus(
             name="redis",
             status=HealthStatus.HEALTHY,
@@ -137,7 +145,7 @@ async def check_redis() -> Optional[DependencyStatus]:
     except Exception as exc:
         latency = (time.time() - start_time) * 1000
         logger.warning(f"Redis health check failed: {exc}")
-        
+
         return DependencyStatus(
             name="redis",
             status=HealthStatus.UNHEALTHY,
@@ -149,16 +157,16 @@ async def check_redis() -> Optional[DependencyStatus]:
 async def check_all_dependencies() -> List[DependencyStatus]:
     """Check all dependencies and return their status."""
     dependencies = []
-    
+
     # Check database (required)
     db_status = await check_database()
     dependencies.append(db_status)
-    
+
     # Check Redis (optional)
     redis_status = await check_redis()
     if redis_status:
         dependencies.append(redis_status)
-    
+
     return dependencies
 
 
@@ -166,7 +174,7 @@ def determine_overall_status(dependencies: List[DependencyStatus]) -> HealthStat
     """Determine overall health status from dependency statuses."""
     if not dependencies:
         return HealthStatus.HEALTHY
-    
+
     # If any required dependency is unhealthy, the whole system is unhealthy
     for dep in dependencies:
         if dep.status == HealthStatus.UNHEALTHY:
@@ -174,12 +182,12 @@ def determine_overall_status(dependencies: List[DependencyStatus]) -> HealthStat
             if dep.name == "redis":
                 continue
             return HealthStatus.UNHEALTHY
-    
+
     # If any dependency is degraded, the system is degraded
     for dep in dependencies:
         if dep.status == HealthStatus.DEGRADED:
             return HealthStatus.DEGRADED
-    
+
     return HealthStatus.HEALTHY
 
 
@@ -190,7 +198,7 @@ router = APIRouter(tags=["health"])
 @router.get("/health", response_model=HealthCheckResponse)
 async def health_check(response: Response):
     """Basic health check endpoint.
-    
+
     Returns 200 if the application is running.
     Use /health/detailed for dependency status.
     """
@@ -203,22 +211,22 @@ async def health_check(response: Response):
 @router.get("/health/detailed", response_model=HealthCheckResponse)
 async def detailed_health_check(response: Response):
     """Detailed health check with dependency status.
-    
+
     Checks:
     - Database connectivity
     - Redis connectivity (if configured)
-    
+
     Returns 503 if any required dependency is unhealthy.
     """
     dependencies = await check_all_dependencies()
     overall_status = determine_overall_status(dependencies)
-    
+
     # Set appropriate HTTP status code
     if overall_status == HealthStatus.UNHEALTHY:
         response.status_code = 503
     elif overall_status == HealthStatus.DEGRADED:
         response.status_code = 200  # Still operational
-    
+
     return HealthCheckResponse(
         status=overall_status,
         dependencies=dependencies,
@@ -229,16 +237,16 @@ async def detailed_health_check(response: Response):
 @router.get("/health/ready", response_model=HealthCheckResponse)
 async def readiness_check(response: Response):
     """Readiness check for Kubernetes.
-    
+
     Returns 200 if the application is ready to receive traffic.
     This checks that all required dependencies are available.
     """
     dependencies = await check_all_dependencies()
     overall_status = determine_overall_status(dependencies)
-    
+
     if overall_status != HealthStatus.HEALTHY:
         response.status_code = 503
-    
+
     return HealthCheckResponse(
         status=overall_status,
         dependencies=dependencies,
@@ -249,10 +257,10 @@ async def readiness_check(response: Response):
 @router.get("/health/live", response_model=HealthCheckResponse)
 async def liveness_check():
     """Liveness check for Kubernetes.
-    
+
     Returns 200 if the application process is alive.
     This does NOT check dependencies - use /health/ready for that.
-    
+
     If this endpoint returns 200, Kubernetes knows the container
     is running and should not be restarted.
     """

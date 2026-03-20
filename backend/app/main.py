@@ -41,14 +41,14 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup and shutdown.
-    
+
     Startup:
     - Initialize database connection and schema
     - Initialize WebSocket manager
     - Sync bounties + contributors from GitHub Issues
     - Start periodic sync background task
     - Log application startup
-    
+
     Shutdown:
     - Cancel background sync task
     - Close WebSocket connections
@@ -57,40 +57,45 @@ async def lifespan(app: FastAPI):
     """
     logger.info(
         "Application starting up",
-        extra={"extra_data": {
-            "version": "0.1.0",
-            "environment": "development",
-        }}
+        extra={
+            "extra_data": {
+                "version": "0.1.0",
+                "environment": "development",
+            }
+        },
     )
-    
+
     try:
         # Initialize database
         await init_db()
         logger.info("Database initialized successfully")
-        
+
         # Initialize WebSocket manager
         await ws_manager.init()
-        
+
         # Sync bounties + contributors from GitHub Issues (replaces static seeds)
         try:
             result = await sync_all()
             logger.info(
                 "GitHub sync complete: %d bounties, %d contributors",
-                result["bounties"], result["contributors"],
+                result["bounties"],
+                result["contributors"],
             )
         except Exception as e:
             logger.error("GitHub sync failed on startup: %s — falling back to seeds", e)
             # Fall back to static seed data if GitHub sync fails
             from app.seed_data import seed_bounties
+
             seed_bounties()
             from app.seed_leaderboard import seed_leaderboard
+
             seed_leaderboard()
-        
+
         # Start periodic sync in background (every 5 minutes)
         sync_task = asyncio.create_task(periodic_sync())
-        
+
         yield
-        
+
         # Shutdown: Cancel background sync, close connections, then database
         sync_task.cancel()
         try:
@@ -98,7 +103,7 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         await ws_manager.shutdown()
-        
+
     finally:
         # Cleanup
         logger.info("Application shutting down")
@@ -186,6 +191,7 @@ async def health_check():
     from app.services.github_sync import get_last_sync
     from app.services.bounty_service import _bounty_store
     from app.services.contributor_service import _store
+
     last_sync = get_last_sync()
     return {
         "status": "ok",

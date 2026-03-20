@@ -41,18 +41,21 @@ router = APIRouter(prefix="/api/bounties", tags=["bounties"])
     summary="Create a new bounty",
 )
 async def create_bounty(data: BountyCreate) -> BountyResponse:
-    logger.info("Creating bounty", extra={"extra_data": {"title": data.title, "tier": str(data.tier)}})
+    logger.info(
+        "Creating bounty",
+        extra={"extra_data": {"title": data.title, "tier": str(data.tier)}},
+    )
     result = bounty_service.create_bounty(data)
-    
+
     # Audit log
     audit_log(
         action=AuditAction.BOUNTY_CREATED,
         actor="api",
         resource="bounty",
         resource_id=result.id,
-        metadata={"title": data.title, "tier": str(data.tier)}
+        metadata={"title": data.title, "tier": str(data.tier)},
     )
-    
+
     return result
 
 
@@ -70,7 +73,10 @@ async def list_bounties(
     skip: int = Query(0, ge=0, description="Number of items to skip"),
     limit: int = Query(20, ge=1, le=100, description="Page size"),
 ) -> BountyListResponse:
-    logger.debug("Listing bounties", extra={"extra_data": {"status": str(status), "tier": str(tier)}})
+    logger.debug(
+        "Listing bounties",
+        extra={"extra_data": {"status": str(status), "tier": str(tier)}},
+    )
     skill_list = (
         [s.strip().lower() for s in skills.split(",") if s.strip()] if skills else None
     )
@@ -110,11 +116,11 @@ async def search_bounties(
     per_page: int = Query(20, ge=1, le=100),
     svc: BountySearchService = Depends(_get_search_service),
 ) -> BountySearchResponse:
-    logger.info("Searching bounties", extra={"extra_data": {"query": q, "status": str(status)}})
+    logger.info(
+        "Searching bounties", extra={"extra_data": {"query": q, "status": str(status)}}
+    )
     skill_list = (
-        [s.strip().lower() for s in skills.split(",") if s.strip()]
-        if skills
-        else []
+        [s.strip().lower() for s in skills.split(",") if s.strip()] if skills else []
     )
     params = BountySearchParams(
         q=q,
@@ -164,14 +170,14 @@ async def hot_bounties(
 )
 async def recommended_bounties(
     skills: str = Query(..., description="Comma-separated user skills"),
-    exclude: Optional[str] = Query(None, description="Comma-separated bounty IDs to exclude"),
+    exclude: Optional[str] = Query(
+        None, description="Comma-separated bounty IDs to exclude"
+    ),
     limit: int = Query(6, ge=1, le=20),
     svc: BountySearchService = Depends(_get_search_service),
 ) -> list[BountySearchResult]:
     skill_list = [s.strip().lower() for s in skills.split(",") if s.strip()]
-    excluded = (
-        [e.strip() for e in exclude.split(",") if e.strip()] if exclude else []
-    )
+    excluded = [e.strip() for e in exclude.split(",") if e.strip()] if exclude else []
     return await svc.recommended(skill_list, excluded, limit)
 
 
@@ -205,7 +211,7 @@ async def update_bounty(bounty_id: str, data: BountyUpdate) -> BountyResponse:
         if "not found" in error.lower():
             raise NotFoundException("Bounty", bounty_id)
         raise HTTPException(status_code=400, detail=error)
-    
+
     # Audit log
     audit_log(
         action=AuditAction.BOUNTY_COMPLETED,
@@ -213,7 +219,7 @@ async def update_bounty(bounty_id: str, data: BountyUpdate) -> BountyResponse:
         resource="bounty",
         resource_id=bounty_id,
     )
-    
+
     return result
 
 
@@ -226,7 +232,7 @@ async def delete_bounty(bounty_id: str) -> None:
     logger.info(f"Deleting bounty: {bounty_id}")
     if not bounty_service.delete_bounty(bounty_id):
         raise NotFoundException("Bounty", bounty_id)
-    
+
     # Audit log
     audit_log(
         action=AuditAction.BOUNTY_CANCELLED,
@@ -249,7 +255,7 @@ async def submit_solution(bounty_id: str, data: SubmissionCreate) -> SubmissionR
         if "not found" in error.lower():
             raise NotFoundException("Bounty", bounty_id)
         raise HTTPException(status_code=400, detail=error)
-    
+
     # Audit log
     audit_log(
         action=AuditAction.BOUNTY_CLAIMED,
@@ -257,7 +263,7 @@ async def submit_solution(bounty_id: str, data: SubmissionCreate) -> SubmissionR
         resource="bounty",
         resource_id=bounty_id,
     )
-    
+
     return result
 
 

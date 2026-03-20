@@ -31,13 +31,15 @@ async def list_contributors(
     """List contributors with optional filtering."""
     logger.debug(
         "Listing contributors",
-        extra={"extra_data": {
-            "search": search,
-            "skills": skills,
-            "badges": badges,
-        }}
+        extra={
+            "extra_data": {
+                "search": search,
+                "skills": skills,
+                "badges": badges,
+            }
+        },
     )
-    
+
     skill_list = skills.split(",") if skills else None
     badge_list = badges.split(",") if badges else None
     return contributor_service.list_contributors(
@@ -49,12 +51,12 @@ async def list_contributors(
 async def create_contributor(data: ContributorCreate):
     """Create a new contributor profile."""
     logger.info(f"Creating contributor: {data.username}")
-    
+
     if contributor_service.get_contributor_by_username(data.username):
         raise ConflictException(f"Username '{data.username}' already exists")
-    
+
     contributor = contributor_service.create_contributor(data)
-    
+
     # Audit log
     audit_log(
         action=AuditAction.CONTRIBUTOR_REGISTERED,
@@ -64,11 +66,11 @@ async def create_contributor(data: ContributorCreate):
         metadata={
             "username": data.username,
             "wallet_address": data.wallet_address,
-        }
+        },
     )
-    
+
     logger.info(f"Contributor created: {contributor.id}")
-    
+
     return contributor
 
 
@@ -76,7 +78,7 @@ async def create_contributor(data: ContributorCreate):
 async def get_contributor(contributor_id: str):
     """Get a contributor by ID."""
     logger.debug(f"Fetching contributor: {contributor_id}")
-    
+
     c = contributor_service.get_contributor(contributor_id)
     if not c:
         raise NotFoundException("Contributor", contributor_id)
@@ -87,11 +89,11 @@ async def get_contributor(contributor_id: str):
 async def update_contributor(contributor_id: str, data: ContributorUpdate):
     """Update a contributor profile."""
     logger.info(f"Updating contributor: {contributor_id}")
-    
+
     c = contributor_service.update_contributor(contributor_id, data)
     if not c:
         raise NotFoundException("Contributor", contributor_id)
-    
+
     # Audit log
     audit_log(
         action=AuditAction.CONTRIBUTOR_PROFILE_UPDATED,
@@ -99,7 +101,7 @@ async def update_contributor(contributor_id: str, data: ContributorUpdate):
         resource="contributor",
         resource_id=contributor_id,
     )
-    
+
     return c
 
 
@@ -107,6 +109,6 @@ async def update_contributor(contributor_id: str, data: ContributorUpdate):
 async def delete_contributor(contributor_id: str):
     """Delete a contributor profile."""
     logger.info(f"Deleting contributor: {contributor_id}")
-    
+
     if not contributor_service.delete_contributor(contributor_id):
         raise NotFoundException("Contributor", contributor_id)

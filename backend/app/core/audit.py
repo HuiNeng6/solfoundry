@@ -12,7 +12,7 @@ additional security context like actor, IP address, and user agent.
 
 Usage:
     from app.core.audit import audit_log, AuditAction
-    
+
     # Log a payout
     audit_log(
         action=AuditAction.PAYOUT_RELEASED,
@@ -34,7 +34,7 @@ from app.core.logging_config import get_audit_logger, get_correlation_id
 
 class AuditAction(str, Enum):
     """Audit action types for security-sensitive operations."""
-    
+
     # Authentication events
     AUTH_LOGIN = "auth.login"
     AUTH_LOGOUT = "auth.logout"
@@ -42,14 +42,14 @@ class AuditAction(str, Enum):
     AUTH_WALLET_VERIFY = "auth.wallet_verify"
     AUTH_TOKEN_INVALID = "auth.token_invalid"
     AUTH_TOKEN_EXPIRED = "auth.token_expired"
-    
+
     # Payout events
     PAYOUT_ESCROW_CREATED = "payout.escrow_created"
     PAYOUT_ESCROW_LOCKED = "payout.escrow_locked"
     PAYOUT_RELEASED = "payout.released"
     PAYOUT_REFUNDED = "payout.refunded"
     PAYOUT_FAILED = "payout.failed"
-    
+
     # Bounty state changes
     BOUNTY_CREATED = "bounty.created"
     BOUNTY_CLAIMED = "bounty.claimed"
@@ -57,26 +57,26 @@ class AuditAction(str, Enum):
     BOUNTY_COMPLETED = "bounty.completed"
     BOUNTY_CANCELLED = "bounty.cancelled"
     BOUNTY_ESCALATED = "bounty.escalated"
-    
+
     # Contributor events
     CONTRIBUTOR_REGISTERED = "contributor.registered"
     CONTRIBUTOR_PROFILE_UPDATED = "contributor.profile_updated"
     CONTRIBUTOR_REPUTATION_CHANGED = "contributor.reputation_changed"
     CONTRIBUTOR_BANNED = "contributor.banned"
     CONTRIBUTOR_UNBANNED = "contributor.unbanned"
-    
+
     # Webhook events
     WEBHOOK_RECEIVED = "webhook.received"
     WEBHOOK_VERIFIED = "webhook.verified"
     WEBHOOK_REJECTED = "webhook.rejected"
     WEBHOOK_FAILED = "webhook.failed"
-    
+
     # Permission events
     PERMISSION_GRANTED = "permission.granted"
     PERMISSION_REVOKED = "permission.revoked"
     ROLE_ASSIGNED = "role.assigned"
     ROLE_REMOVED = "role.removed"
-    
+
     # System events
     SYSTEM_CONFIG_CHANGED = "system.config_changed"
     SYSTEM_KEY_ROTATED = "system.key_rotated"
@@ -86,7 +86,7 @@ class AuditAction(str, Enum):
 @dataclass
 class AuditEntry:
     """Structured audit log entry.
-    
+
     Attributes:
         action: The action that was performed
         actor: Who performed the action (user ID, system, or API key)
@@ -99,6 +99,7 @@ class AuditEntry:
         timestamp: When the action occurred
         metadata: Additional context-specific data
     """
+
     action: AuditAction
     actor: str
     resource: str
@@ -109,7 +110,7 @@ class AuditEntry:
     correlation_id: Optional[str] = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
@@ -128,10 +129,10 @@ class AuditEntry:
 
 class AuditLogger:
     """Logger for audit events with structured output.
-    
+
     Provides a simple interface for logging security-sensitive operations
     with consistent formatting and context.
-    
+
     Example:
         logger = AuditLogger()
         logger.log(
@@ -143,10 +144,10 @@ class AuditLogger:
             ip_address="192.168.1.1",
         )
     """
-    
+
     def __init__(self):
         self._logger = get_audit_logger()
-    
+
     def log(
         self,
         action: AuditAction,
@@ -159,7 +160,7 @@ class AuditLogger:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Log an audit event.
-        
+
         Args:
             action: The action that was performed
             actor: Who performed the action
@@ -181,10 +182,10 @@ class AuditLogger:
             correlation_id=get_correlation_id(),
             metadata=metadata or {},
         )
-        
+
         # Determine log level based on result
         log_level = "info" if result == "success" else "warning"
-        
+
         # Log with structured data
         getattr(self._logger, log_level)(
             f"Audit: {action.value}",
@@ -196,9 +197,9 @@ class AuditLogger:
                 "resource_id": resource_id,
                 "result": result,
                 "ip_address": ip_address,
-            }
+            },
         )
-    
+
     def log_auth_event(
         self,
         action: AuditAction,
@@ -209,7 +210,7 @@ class AuditLogger:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Log an authentication event.
-        
+
         Convenience method for auth-related audit events.
         """
         self.log(
@@ -221,7 +222,7 @@ class AuditLogger:
             user_agent=user_agent,
             metadata=metadata,
         )
-    
+
     def log_payout_event(
         self,
         action: AuditAction,
@@ -235,7 +236,7 @@ class AuditLogger:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Log a payout event.
-        
+
         Convenience method for payout-related audit events.
         """
         self.log(
@@ -252,7 +253,7 @@ class AuditLogger:
                 **(metadata or {}),
             },
         )
-    
+
     def log_bounty_event(
         self,
         action: AuditAction,
@@ -263,7 +264,7 @@ class AuditLogger:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Log a bounty state change event.
-        
+
         Convenience method for bounty-related audit events.
         """
         self.log(
@@ -275,7 +276,7 @@ class AuditLogger:
             ip_address=ip_address,
             metadata=metadata,
         )
-    
+
     def log_webhook_event(
         self,
         action: AuditAction,
@@ -287,7 +288,7 @@ class AuditLogger:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Log a webhook event.
-        
+
         Convenience method for webhook-related audit events.
         """
         self.log(
@@ -328,11 +329,11 @@ def audit_log(
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Convenience function for logging audit events.
-    
+
     This is a shorthand for:
         logger = get_audit_logger_instance()
         logger.log(...)
-    
+
     Example:
         audit_log(
             action=AuditAction.BOUNTY_CLAIMED,
