@@ -1,12 +1,11 @@
-"""Bounty Pydantic models for CRUD API (Issue #3).
+"""Bounty Pydantic models for CRUD API (Issue #3) and Claiming System (Issue #16).
 
-Covers: create, read, update, delete, and solution submission.
-Claim lifecycle is out of scope (see Issue #16).
+Covers: create, read, update, delete, solution submission, and claim lifecycle.
 """
 
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import Optional
 
@@ -27,13 +26,15 @@ class BountyTier(int, Enum):
 class BountyStatus(str, Enum):
     """Lifecycle status of a bounty."""
     OPEN = "open"
+    CLAIMED = "claimed"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     PAID = "paid"
 
 
 VALID_STATUS_TRANSITIONS: dict[BountyStatus, set[BountyStatus]] = {
-    BountyStatus.OPEN: {BountyStatus.IN_PROGRESS},
+    BountyStatus.OPEN: {BountyStatus.CLAIMED},
+    BountyStatus.CLAIMED: {BountyStatus.OPEN, BountyStatus.IN_PROGRESS},
     BountyStatus.IN_PROGRESS: {BountyStatus.COMPLETED, BountyStatus.OPEN},
     BountyStatus.COMPLETED: {BountyStatus.PAID, BountyStatus.IN_PROGRESS},
     BountyStatus.PAID: set(),  # terminal
@@ -51,6 +52,27 @@ REWARD_MIN = 0.01
 REWARD_MAX = 1_000_000.0
 MAX_SKILLS = 20
 SKILL_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.+-]{0,49}$")
+
+
+# ---------------------------------------------------------------------------
+# Claim configuration (Issue #16)
+# ---------------------------------------------------------------------------
+
+# Tier-specific claim rules
+T2_CLAIM_DEADLINE_DAYS = 7
+T3_CLAIM_DEADLINE_DAYS = 14
+
+# Reputation gates
+T2_MIN_REPUTATION = 10
+T3_MIN_REPUTATION = 50
+
+
+class ClaimStatus(str, Enum):
+    """Status of a claim."""
+    ACTIVE = "active"
+    RELEASED = "released"
+    COMPLETED = "completed"
+    EXPIRED = "expired"
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +111,48 @@ class SubmissionResponse(BaseModel):
     submitted_by: str
     notes: Optional[str] = None
     submitted_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Claim models (Issue #16)
+# ---------------------------------------------------------------------------
+
+class ClaimHistoryRecord(BaseModel):
+    """Record of a claim event in the bounty's history."""
+    claimant_id: str
+    claimed_at: datetime
+    deadline: datetime
+    status: ClaimStatus = ClaimStatus.ACTIVE
+    released_at: Optional[datetime] = None
+    release_reason: Optional[str] = None
+
+
+class BountyClaimRequest(BaseModel):
+    """Payload for claiming a bounty."""
+    claimant_id: str = Field(..., min_length=1, max_length=100)
+    reputation: int = Field(0, ge=0, description="User's current reputation score")
+    application: Optional[str] = Field(None, max_length=2000, description="Application plan (required for T3)")
+
+
+class BountyUnclaimRequest(BaseModel):
+    """Payload for releasing a claim."""
+    reason: Optional[str] = Field(None, max_length=500, description="Optional reason for releasing")
+
+
+class BountyClaimantResponse(BaseModel):
+    """Response for getting current claimant info."""
+    bounty_id: str
+    claimant_id: str
+    claimed_at: datetime
+    deadline: datetime
+    status: BountyStatus
+
+
+class BountyClaimHistoryResponse(BaseModel):
+    """Response for claim history endpoint."""
+    bounty_id: str
+    items: list[ClaimHistoryRecord]
+    total: int
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +226,12 @@ class BountyDB(BaseModel):
     required_skills: list[str] = Field(default_factory=list)
     deadline: Optional[datetime] = None
     created_by: str = "system"
+    # Claim fields (Issue #16)
+    claimant_id: Optional[str] = None
+    claimed_at: Optional[datetime] = None
+    claim_deadline: Optional[datetime] = None
+    claim_history: list[ClaimHistoryRecord] = Field(default_factory=list)
+    # Submissions
     submissions: list[SubmissionRecord] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -179,6 +249,10 @@ class BountyResponse(BaseModel):
     required_skills: list[str] = Field(default_factory=list)
     deadline: Optional[datetime] = None
     created_by: str
+    # Claim fields (Issue #16)
+    claimant_id: Optional[str] = None
+    claimed_at: Optional[datetime] = None
+    claim_deadline: Optional[datetime] = None
     submissions: list[SubmissionResponse] = Field(default_factory=list)
     submission_count: int = 0
     created_at: datetime
@@ -195,6 +269,7 @@ class BountyListItem(BaseModel):
     required_skills: list[str] = Field(default_factory=list)
     deadline: Optional[datetime] = None
     created_by: str
+    claimant_id: Optional[str] = None
     submission_count: int = 0
     created_at: datetime
 

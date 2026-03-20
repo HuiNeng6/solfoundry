@@ -1,10 +1,9 @@
-"""In-memory bounty service for MVP (Issue #3).
+"""In-memory bounty service for MVP (Issue #3) and Claiming System (Issue #16).
 
-Provides CRUD operations and solution submission.
-Claim lifecycle is out of scope (see Issue #16).
+Provides CRUD operations, solution submission, and claim lifecycle management.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from app.models.bounty import (
@@ -14,11 +13,23 @@ from app.models.bounty import (
     BountyListResponse,
     BountyResponse,
     BountyStatus,
+    BountyTier,
     BountyUpdate,
     SubmissionCreate,
     SubmissionRecord,
     SubmissionResponse,
     VALID_STATUS_TRANSITIONS,
+    # Claim models
+    BountyClaimRequest,
+    BountyUnclaimRequest,
+    BountyClaimantResponse,
+    BountyClaimHistoryResponse,
+    ClaimHistoryRecord,
+    ClaimStatus,
+    T2_CLAIM_DEADLINE_DAYS,
+    T3_CLAIM_DEADLINE_DAYS,
+    T2_MIN_REPUTATION,
+    T3_MIN_REPUTATION,
 )
 
 # ---------------------------------------------------------------------------
@@ -56,6 +67,9 @@ def _to_bounty_response(b: BountyDB) -> BountyResponse:
         required_skills=b.required_skills,
         deadline=b.deadline,
         created_by=b.created_by,
+        claimant_id=b.claimant_id,
+        claimed_at=b.claimed_at,
+        claim_deadline=b.claim_deadline,
         submissions=subs,
         submission_count=len(subs),
         created_at=b.created_at,
@@ -73,13 +87,14 @@ def _to_list_item(b: BountyDB) -> BountyListItem:
         required_skills=b.required_skills,
         deadline=b.deadline,
         created_by=b.created_by,
+        claimant_id=b.claimant_id,
         submission_count=len(b.submissions),
         created_at=b.created_at,
     )
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Public API - CRUD Operations
 # ---------------------------------------------------------------------------
 
 def create_bounty(data: BountyCreate) -> BountyResponse:
@@ -170,6 +185,10 @@ def delete_bounty(bounty_id: str) -> bool:
     return _bounty_store.pop(bounty_id, None) is not None
 
 
+# ---------------------------------------------------------------------------
+# Public API - Submissions
+# ---------------------------------------------------------------------------
+
 def submit_solution(
     bounty_id: str, data: SubmissionCreate
 ) -> tuple[Optional[SubmissionResponse], Optional[str]]:
@@ -178,7 +197,7 @@ def submit_solution(
     if not bounty:
         return None, "Bounty not found"
 
-    if bounty.status not in (BountyStatus.OPEN, BountyStatus.IN_PROGRESS):
+    if bounty.status not in (BountyStatus.OPEN, BountyStatus.IN_PROGRESS, BountyStatus.CLAIMED):
         return None, f"Bounty is not accepting submissions (status: {bounty.status.value})"
 
     # Reject duplicate PR URLs on the same bounty
@@ -203,3 +222,148 @@ def get_submissions(bounty_id: str) -> Optional[list[SubmissionResponse]]:
     if not bounty:
         return None
     return [_to_submission_response(s) for s in bounty.submissions]
+
+
+# ---------------------------------------------------------------------------
+# Public API - Claim Lifecycle (Issue #16)
+# ---------------------------------------------------------------------------
+
+def claim_bounty(
+    bounty_id: str, data: BountyClaimRequest
+) -> tuple[Optional[BountyResponse], Optional[str]]:
+    """Claim a bounty for a contributor."""
+    bounty = _bounty_store.get(bounty_id)
+    if not bounty:
+        return None, "Bounty not found"
+    
+    if bounty.status != BountyStatus.OPEN:
+        return None, f"Bounty is not available for claiming (status: {bounty.status.value})"
+    
+    if bounty.tier == BountyTier.T1:
+        return None, "Tier 1 bounties do not support claiming. Submit directly."
+    
+    min_reputation = T2_MIN_REPUTATION if bounty.tier == BountyTier.T2 else T3_MIN_REPUTATION
+    if data.reputation < min_reputation:
+        return None, f"Insufficient reputation. Tier {bounty.tier} requires reputation >= {min_reputation}"
+    
+    if bounty.tier == BountyTier.T3 and not data.application:
+        return None, "Tier 3 bounties require an application plan"
+    
+    if bounty.tier == BountyTier.T2:
+        for b in _bounty_store.values():
+            if b.claimant_id == data.claimant_id and b.status == BountyStatus.CLAIMED:
+                return None, "You already have an active claim. Release it before claiming another."
+    
+    deadline_days = T2_CLAIM_DEADLINE_DAYS if bounty.tier == BountyTier.T2 else T3_CLAIM_DEADLINE_DAYS
+    claim_deadline = datetime.now(timezone.utc) + timedelta(days=deadline_days)
+    now = datetime.now(timezone.utc)
+    
+    history_record = ClaimHistoryRecord(
+        claimant_id=data.claimant_id,
+        claimed_at=now,
+        deadline=claim_deadline,
+        status=ClaimStatus.ACTIVE,
+    )
+    
+    bounty.status = BountyStatus.CLAIMED
+    bounty.claimant_id = data.claimant_id
+    bounty.claimed_at = now
+    bounty.claim_deadline = claim_deadline
+    bounty.claim_history.append(history_record)
+    bounty.updated_at = now
+    
+    return _to_bounty_response(bounty), None
+
+
+def unclaim_bounty(
+    bounty_id: str, claimant_id: str, data: Optional[BountyUnclaimRequest] = None
+) -> tuple[Optional[BountyResponse], Optional[str]]:
+    """Release a claim on a bounty."""
+    bounty = _bounty_store.get(bounty_id)
+    if not bounty:
+        return None, "Bounty not found"
+    
+    if bounty.status != BountyStatus.CLAIMED:
+        return None, f"Bounty is not claimed (status: {bounty.status.value})"
+    
+    if bounty.claimant_id != claimant_id:
+        return None, "Only the current claimant can release the claim"
+    
+    now = datetime.now(timezone.utc)
+    
+    for record in bounty.claim_history:
+        if record.claimant_id == claimant_id and record.status == ClaimStatus.ACTIVE:
+            record.status = ClaimStatus.RELEASED
+            record.released_at = now
+            record.release_reason = data.reason if data else None
+            break
+    
+    bounty.status = BountyStatus.OPEN
+    bounty.claimant_id = None
+    bounty.claimed_at = None
+    bounty.claim_deadline = None
+    bounty.updated_at = now
+    
+    return _to_bounty_response(bounty), None
+
+
+def get_claimant(bounty_id: str) -> tuple[Optional[BountyClaimantResponse], Optional[str]]:
+    """Get the current claimant for a bounty."""
+    bounty = _bounty_store.get(bounty_id)
+    if not bounty:
+        return None, "Bounty not found"
+    
+    if bounty.status != BountyStatus.CLAIMED or not bounty.claimant_id:
+        return None, "Bounty is not currently claimed"
+    
+    return BountyClaimantResponse(
+        bounty_id=bounty.id,
+        claimant_id=bounty.claimant_id,
+        claimed_at=bounty.claimed_at,
+        deadline=bounty.claim_deadline,
+        status=bounty.status,
+    ), None
+
+
+def get_claim_history(
+    bounty_id: str, skip: int = 0, limit: int = 20
+) -> tuple[Optional[BountyClaimHistoryResponse], Optional[str]]:
+    """Get the claim history for a bounty."""
+    bounty = _bounty_store.get(bounty_id)
+    if not bounty:
+        return None, "Bounty not found"
+    
+    total = len(bounty.claim_history)
+    all_records = list(reversed(bounty.claim_history))
+    page = all_records[skip:skip + limit]
+    
+    return BountyClaimHistoryResponse(
+        bounty_id=bounty_id,
+        items=page,
+        total=total,
+    ), None
+
+
+def release_expired_claims() -> int:
+    """Background task to release expired claims."""
+    now = datetime.now(timezone.utc)
+    released_count = 0
+    
+    for bounty in _bounty_store.values():
+        if bounty.status == BountyStatus.CLAIMED and bounty.claim_deadline:
+            if bounty.claim_deadline < now:
+                for record in bounty.claim_history:
+                    if record.claimant_id == bounty.claimant_id and record.status == ClaimStatus.ACTIVE:
+                        record.status = ClaimStatus.EXPIRED
+                        record.released_at = now
+                        record.release_reason = "Claim deadline expired"
+                        break
+                
+                bounty.status = BountyStatus.OPEN
+                bounty.claimant_id = None
+                bounty.claimed_at = None
+                bounty.claim_deadline = None
+                bounty.updated_at = now
+                released_count += 1
+    
+    return released_count
