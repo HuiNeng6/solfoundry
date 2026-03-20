@@ -32,6 +32,7 @@ declare module '@solana/wallet-adapter-react' {
     publicKey: { toBase58(): string } | null;
     connecting: boolean;
     connected: boolean;
+    adapter: WalletAdapter;
   }
 
   export function useWallet(): {
