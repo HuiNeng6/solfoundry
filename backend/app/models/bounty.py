@@ -42,6 +42,9 @@ VALID_STATUS_TRANSITIONS: dict[BountyStatus, set[BountyStatus]] = {
     BountyStatus.PAID: set(),  # terminal
 }
 
+# Valid status values for webhook processor
+VALID_STATUSES: set[str] = {status.value for status in BountyStatus}
+
 
 # ---------------------------------------------------------------------------
 # Constraints
