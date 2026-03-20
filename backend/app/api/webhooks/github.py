@@ -34,11 +34,11 @@ async def receive_github_webhook(
 ) -> JSONResponse:
     """
     Receive and process GitHub webhook events.
-    
+
     Verifies HMAC-SHA256 signature, then processes based on event type:
     - pull_request: Match to bounty, update status
     - issues: Auto-create bounty on label
-    
+
     Headers:
     - X-GitHub-Event: Event type (pull_request, issues, push, ping)
     - X-Hub-Signature-256: HMAC signature
@@ -123,7 +123,7 @@ async def receive_github_webhook(
     if event_type == "ping":
         logger.info(f"Received ping from GitHub (delivery={delivery_id})")
         return JSONResponse(status_code=200, content={"msg": "pong"})
-    
+
     # Parse payload
     try:
         body = json.loads(payload)
@@ -150,13 +150,13 @@ async def receive_github_webhook(
     
     # Process event
     processor = WebhookProcessor(db)
-    
+
     try:
         if event_type == "pull_request":
             action = body.get("action", "")
             pr = body.get("pull_request", {})
             repo = body.get("repository", {})
-            
+
             result = await processor.process_pull_request(
                 action=action,
                 pr_number=pr.get("number", 0),
@@ -166,7 +166,7 @@ async def receive_github_webhook(
                 delivery_id=delivery_id,
                 payload=payload,
             )
-            
+
             logger.info(
                 f"Processed pull_request.{action}",
                 extra={"extra_data": {
@@ -190,15 +190,15 @@ async def receive_github_webhook(
                     "repository": repo.get("full_name"),
                 }
             )
-            
+
             return JSONResponse(status_code=200, content=result)
-        
+
         elif event_type == "issues":
             action = body.get("action", "")
             issue = body.get("issue", {})
             repo = body.get("repository", {})
             labels = issue.get("labels", [])
-            
+
             result = await processor.process_issues(
                 action=action,
                 issue_number=issue.get("number", 0),
@@ -210,7 +210,7 @@ async def receive_github_webhook(
                 delivery_id=delivery_id,
                 payload=payload,
             )
-            
+
             logger.info(
                 f"Processed issues.{action}",
                 extra={"extra_data": {
@@ -236,15 +236,15 @@ async def receive_github_webhook(
             )
             
             return JSONResponse(status_code=200, content=result)
-        
+
         else:
             # Unhandled event type
             logger.info(f"Unhandled event type: {event_type} (delivery={delivery_id})")
             return JSONResponse(
                 status_code=202,
-                content={"status": "accepted", "event": event_type, "handled": False}
+                content={"status": "accepted", "event": event_type, "handled": False},
             )
-    
+
     except Exception as exc:
         logger.error(
             f"Error processing {event_type} event (delivery={delivery_id}): {exc}",

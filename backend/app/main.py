@@ -8,16 +8,21 @@ This module initializes the FastAPI application with:
 - API routers for all endpoints
 """
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.auth import router as auth_router
 from app.api.contributors import router as contributors_router
 from app.api.bounties import router as bounties_router
 from app.api.notifications import router as notifications_router
 from app.api.leaderboard import router as leaderboard_router
+from app.api.payouts import router as payouts_router
 from app.api.webhooks.github import router as github_webhook_router
+from app.api.websocket import router as websocket_router
 from app.database import init_db, close_db
 from app.core.logging_config import setup_logging, get_logger
 from app.core.middleware import (
@@ -26,7 +31,8 @@ from app.core.middleware import (
     AccessLoggingMiddleware,
 )
 from app.core.health import router as health_router
-
+from app.services.websocket_manager import manager as ws_manager
+from app.services.github_sync import sync_all, periodic_sync
 
 # Initialize logging system
 setup_logging()
@@ -39,9 +45,14 @@ async def lifespan(app: FastAPI):
     
     Startup:
     - Initialize database connection and schema
+    - Initialize WebSocket manager
+    - Sync bounties + contributors from GitHub Issues
+    - Start periodic sync background task
     - Log application startup
     
     Shutdown:
+    - Cancel background sync task
+    - Close WebSocket connections
     - Close database connections
     - Log application shutdown
     """
@@ -58,7 +69,36 @@ async def lifespan(app: FastAPI):
         await init_db()
         logger.info("Database initialized successfully")
         
+        # Initialize WebSocket manager
+        await ws_manager.init()
+        
+        # Sync bounties + contributors from GitHub Issues (replaces static seeds)
+        try:
+            result = await sync_all()
+            logger.info(
+                "GitHub sync complete: %d bounties, %d contributors",
+                result["bounties"], result["contributors"],
+            )
+        except Exception as e:
+            logger.error("GitHub sync failed on startup: %s — falling back to seeds", e)
+            # Fall back to static seed data if GitHub sync fails
+            from app.seed_data import seed_bounties
+            seed_bounties()
+            from app.seed_leaderboard import seed_leaderboard
+            seed_leaderboard()
+        
+        # Start periodic sync in background (every 5 minutes)
+        sync_task = asyncio.create_task(periodic_sync())
+        
         yield
+        
+        # Shutdown: Cancel background sync, close connections, then database
+        sync_task.cancel()
+        try:
+            await sync_task
+        except asyncio.CancelledError:
+            pass
+        await ws_manager.shutdown()
         
     finally:
         # Cleanup
@@ -112,17 +152,52 @@ app.add_middleware(AccessLoggingMiddleware)
 app.add_middleware(ErrorHandlingMiddleware)
 
 
-# Include API routers
-app.include_router(health_router)  # Health check endpoints (no prefix)
-app.include_router(contributors_router)
-app.include_router(bounties_router, prefix="/api", tags=["bounties"])
-app.include_router(notifications_router, prefix="/api", tags=["notifications"])
+# ── Route Registration ──────────────────────────────────────────────────────
+# Health check endpoints (no prefix)
+app.include_router(health_router)
+
+# Auth: /auth/* (prefix defined in router)
+app.include_router(auth_router)
+
+# Contributors: /contributors/* → needs /api prefix added here
+app.include_router(contributors_router, prefix="/api")
+
+# Bounties: router already has /api/bounties prefix — do NOT add another /api
+app.include_router(bounties_router)
+
+# Notifications: router has /notifications prefix — add /api here
+app.include_router(notifications_router, prefix="/api")
+
+# Leaderboard: router has /api prefix — mounts at /api/leaderboard/*
 app.include_router(leaderboard_router)
+
+# Payouts: router has /api prefix — mounts at /api/payouts/*
+app.include_router(payouts_router)
+
+# GitHub Webhooks: router prefix handled internally
 app.include_router(github_webhook_router, prefix="/api/webhooks", tags=["webhooks"])
 
+# WebSocket: /ws/*
+app.include_router(websocket_router)
 
-# Legacy health check endpoint (redirects to new endpoint)
-@app.get("/health", deprecated=True, include_in_schema=False)
-async def legacy_health_check():
-    """Legacy health check - use /health/detailed for full status."""
-    return {"status": "ok"}
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint with sync status."""
+    from app.services.github_sync import get_last_sync
+    from app.services.bounty_service import _bounty_store
+    from app.services.contributor_service import _store
+    last_sync = get_last_sync()
+    return {
+        "status": "ok",
+        "bounties": len(_bounty_store),
+        "contributors": len(_store),
+        "last_sync": last_sync.isoformat() if last_sync else None,
+    }
+
+
+@app.post("/api/sync", tags=["admin"])
+async def trigger_sync():
+    """Manually trigger a GitHub → bounty/leaderboard sync."""
+    result = await sync_all()
+    return result

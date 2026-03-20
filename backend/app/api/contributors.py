@@ -1,8 +1,13 @@
 """Contributor profiles API router."""
 
 from typing import Optional
-from fastapi import APIRouter, Query
-from app.models.contributor import ContributorCreate, ContributorResponse, ContributorListResponse, ContributorUpdate
+from fastapi import APIRouter, HTTPException, Query
+from app.models.contributor import (
+    ContributorCreate,
+    ContributorResponse,
+    ContributorListResponse,
+    ContributorUpdate,
+)
 from app.services import contributor_service
 from app.core.errors import NotFoundException, ConflictException
 from app.core.logging_config import get_logger
@@ -15,7 +20,9 @@ router = APIRouter(prefix="/contributors", tags=["contributors"])
 
 @router.get("", response_model=ContributorListResponse)
 async def list_contributors(
-    search: Optional[str] = Query(None, description="Search by username or display name"),
+    search: Optional[str] = Query(
+        None, description="Search by username or display name"
+    ),
     skills: Optional[str] = Query(None, description="Comma-separated skill filter"),
     badges: Optional[str] = Query(None, description="Comma-separated badge filter"),
     skip: int = Query(0, ge=0),
@@ -33,7 +40,9 @@ async def list_contributors(
     
     skill_list = skills.split(",") if skills else None
     badge_list = badges.split(",") if badges else None
-    return contributor_service.list_contributors(search=search, skills=skill_list, badges=badge_list, skip=skip, limit=limit)
+    return contributor_service.list_contributors(
+        search=search, skills=skill_list, badges=badge_list, skip=skip, limit=limit
+    )
 
 
 @router.post("", response_model=ContributorResponse, status_code=201)
