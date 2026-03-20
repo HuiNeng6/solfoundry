@@ -34,14 +34,17 @@ async def lifespan(app: FastAPI):
         result = await sync_all()
         logger.info(
             "GitHub sync complete: %d bounties, %d contributors",
-            result["bounties"], result["contributors"],
+            result["bounties"],
+            result["contributors"],
         )
     except Exception as e:
         logger.error("GitHub sync failed on startup: %s — falling back to seeds", e)
         # Fall back to static seed data if GitHub sync fails
         from app.seed_data import seed_bounties
+
         seed_bounties()
         from app.seed_leaderboard import seed_leaderboard
+
         seed_leaderboard()
 
     # Start periodic sync in background (every 5 minutes)
@@ -115,6 +118,7 @@ async def health_check():
     from app.services.github_sync import get_last_sync
     from app.services.bounty_service import _bounty_store
     from app.services.contributor_service import _store
+
     last_sync = get_last_sync()
     return {
         "status": "ok",

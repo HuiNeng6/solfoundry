@@ -63,11 +63,11 @@ async def db_session():
     # Create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    
+
     # Provide session
     async with async_session_factory() as session:
         yield session
-    
+
     # Drop tables after test
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -77,8 +77,7 @@ async def db_session():
 async def client(db_session):
     """Create an async test client."""
     async with AsyncClient(
-        transport=ASGITransport(app=_test_app),
-        base_url="http://test"
+        transport=ASGITransport(app=_test_app), base_url="http://test"
     ) as ac:
         yield ac
 
@@ -367,9 +366,28 @@ class TestListAgents:
     @pytest.mark.asyncio
     async def test_list_filter_by_role(self, client):
         """Test filtering by role."""
-        await client.post("/api/agents/register", json={**VALID_AGENT, "name": "Backend Agent", "role": "backend-engineer"})
-        await client.post("/api/agents/register", json={**VALID_AGENT, "name": "Frontend Agent", "role": "frontend-engineer", "operator_wallet": ANOTHER_WALLET})
-        await client.post("/api/agents/register", json={**VALID_AGENT, "name": "AI Agent", "role": "ai-engineer", "operator_wallet": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"})
+        await client.post(
+            "/api/agents/register",
+            json={**VALID_AGENT, "name": "Backend Agent", "role": "backend-engineer"},
+        )
+        await client.post(
+            "/api/agents/register",
+            json={
+                **VALID_AGENT,
+                "name": "Frontend Agent",
+                "role": "frontend-engineer",
+                "operator_wallet": ANOTHER_WALLET,
+            },
+        )
+        await client.post(
+            "/api/agents/register",
+            json={
+                **VALID_AGENT,
+                "name": "AI Agent",
+                "role": "ai-engineer",
+                "operator_wallet": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+            },
+        )
 
         resp = await client.get("/api/agents?role=backend-engineer")
         body = resp.json()

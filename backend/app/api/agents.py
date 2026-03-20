@@ -260,7 +260,9 @@ async def update_agent(
             status_code=401, detail="X-Operator-Wallet header is required for updates"
         )
 
-    result, error = await agent_service.update_agent(db, agent_id, data, x_operator_wallet)
+    result, error = await agent_service.update_agent(
+        db, agent_id, data, x_operator_wallet
+    )
 
     if error:
         if "not found" in error.lower() or "invalid" in error.lower():
@@ -323,7 +325,9 @@ async def deactivate_agent(
             detail="X-Operator-Wallet header is required for deactivation",
         )
 
-    success, error = await agent_service.deactivate_agent(db, agent_id, x_operator_wallet)
+    success, error = await agent_service.deactivate_agent(
+        db, agent_id, x_operator_wallet
+    )
 
     if error:
         if "not found" in error.lower() or "invalid" in error.lower():

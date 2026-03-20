@@ -33,7 +33,7 @@ async def create_agent(db: AsyncSession, data: AgentCreate) -> AgentResponse:
         AgentResponse with created agent details
     """
     now = datetime.now(timezone.utc)
-    
+
     agent = Agent(
         id=uuid.uuid4(),
         name=data.name,
@@ -48,11 +48,11 @@ async def create_agent(db: AsyncSession, data: AgentCreate) -> AgentResponse:
         created_at=now,
         updated_at=now,
     )
-    
+
     db.add(agent)
     await db.commit()
     await db.refresh(agent)
-    
+
     return AgentResponse(
         id=str(agent.id),
         name=agent.name,
@@ -83,15 +83,13 @@ async def get_agent(db: AsyncSession, agent_id: str) -> Optional[AgentResponse]:
         agent_uuid = uuid.UUID(agent_id)
     except ValueError:
         return None
-    
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_uuid)
-    )
+
+    result = await db.execute(select(Agent).where(Agent.id == agent_uuid))
     agent = result.scalar_one_or_none()
-    
+
     if not agent:
         return None
-    
+
     return AgentResponse(
         id=str(agent.id),
         name=agent.name,
@@ -129,34 +127,39 @@ async def list_agents(
     """
     # Build query conditions
     conditions = []
-    
+
     if role is not None:
         conditions.append(Agent.role == role.value)
-    
+
     if available is not None:
         if available:
-            conditions.append(and_(Agent.is_active.is_(True), Agent.availability == "available"))
+            conditions.append(
+                and_(Agent.is_active.is_(True), Agent.availability == "available")
+            )
         else:
-            conditions.append(and_(Agent.is_active.is_(False), Agent.availability != "available"))
-    
+            conditions.append(
+                and_(Agent.is_active.is_(False), Agent.availability != "available")
+            )
+
     # Build base query
     base_query = select(Agent)
     if conditions:
         base_query = base_query.where(and_(*conditions))
-    
+
     # Get total count
     from sqlalchemy import func
+
     count_query = select(func.count()).select_from(base_query.subquery())
     total_result = await db.execute(count_query)
     total = total_result.scalar()
-    
+
     # Get paginated results, sorted by created_at descending
     offset = (page - 1) * limit
     query = base_query.order_by(Agent.created_at.desc()).offset(offset).limit(limit)
-    
+
     result = await db.execute(query)
     agents = result.scalars().all()
-    
+
     items = [
         AgentListItem(
             id=str(a.id),
@@ -170,7 +173,7 @@ async def list_agents(
         )
         for a in agents
     ]
-    
+
     return AgentListResponse(
         items=items,
         total=total,
@@ -180,10 +183,7 @@ async def list_agents(
 
 
 async def update_agent(
-    db: AsyncSession,
-    agent_id: str,
-    data: AgentUpdate,
-    operator_wallet: str
+    db: AsyncSession, agent_id: str, data: AgentUpdate, operator_wallet: str
 ) -> tuple[Optional[AgentResponse], Optional[str]]:
     """Update an agent (only by the operator who registered it).
 
@@ -200,22 +200,20 @@ async def update_agent(
         agent_uuid = uuid.UUID(agent_id)
     except ValueError:
         return None, "Invalid agent ID format"
-    
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_uuid)
-    )
+
+    result = await db.execute(select(Agent).where(Agent.id == agent_uuid))
     agent = result.scalar_one_or_none()
-    
+
     if not agent:
         return None, "Agent not found"
-    
+
     # Verify ownership
     if agent.operator_wallet != operator_wallet:
         return (
             None,
             "Unauthorized: only the operator who registered this agent can update it",
         )
-    
+
     # Update fields
     update_data = data.model_dump(exclude_unset=True)
     for key, value in update_data.items():
@@ -223,12 +221,12 @@ async def update_agent(
             setattr(agent, key, value.value)
         else:
             setattr(agent, key, value)
-    
+
     agent.updated_at = datetime.now(timezone.utc)
-    
+
     await db.commit()
     await db.refresh(agent)
-    
+
     return AgentResponse(
         id=str(agent.id),
         name=agent.name,
@@ -246,9 +244,7 @@ async def update_agent(
 
 
 async def deactivate_agent(
-    db: AsyncSession,
-    agent_id: str,
-    operator_wallet: str
+    db: AsyncSession, agent_id: str, operator_wallet: str
 ) -> tuple[bool, Optional[str]]:
     """Deactivate an agent (soft delete - sets is_active=False).
 
@@ -264,31 +260,31 @@ async def deactivate_agent(
         agent_uuid = uuid.UUID(agent_id)
     except ValueError:
         return False, "Invalid agent ID format"
-    
-    result = await db.execute(
-        select(Agent).where(Agent.id == agent_uuid)
-    )
+
+    result = await db.execute(select(Agent).where(Agent.id == agent_uuid))
     agent = result.scalar_one_or_none()
-    
+
     if not agent:
         return False, "Agent not found"
-    
+
     # Verify ownership
     if agent.operator_wallet != operator_wallet:
         return (
             False,
             "Unauthorized: only the operator who registered this agent can deactivate it",
         )
-    
+
     agent.is_active = False
     agent.updated_at = datetime.now(timezone.utc)
-    
+
     await db.commit()
-    
+
     return True, None
 
 
-async def get_agent_by_wallet(db: AsyncSession, operator_wallet: str) -> Optional[AgentResponse]:
+async def get_agent_by_wallet(
+    db: AsyncSession, operator_wallet: str
+) -> Optional[AgentResponse]:
     """Get an agent by operator wallet address.
 
     Args:
@@ -302,10 +298,10 @@ async def get_agent_by_wallet(db: AsyncSession, operator_wallet: str) -> Optiona
         select(Agent).where(Agent.operator_wallet == operator_wallet)
     )
     agent = result.scalar_one_or_none()
-    
+
     if not agent:
         return None
-    
+
     return AgentResponse(
         id=str(agent.id),
         name=agent.name,
