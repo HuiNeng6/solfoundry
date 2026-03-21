@@ -177,13 +177,13 @@ def update_bounty(
         setattr(bounty, key, value)
 
     bounty.updated_at = datetime.now(timezone.utc)
-    
+
     if "status" in updates:
         audit_event(
             "bounty_status_updated",
             bounty_id=bounty_id,
             new_status=updates["status"],
-            updated_by=bounty.created_by # In a real app, this would be the current user
+            updated_by=bounty.created_by,  # In a real app, this would be the current user
         )
 
     return _to_bounty_response(bounty), None
@@ -218,6 +218,7 @@ def submit_solution(
 
     # Generate deterministic mock AI score from PR URL
     import hashlib
+
     url_hash = int(hashlib.md5(data.pr_url.encode()).hexdigest(), 16)
     score = 0.5 + (url_hash % 50) / 100.0
 
@@ -264,14 +265,14 @@ def update_submission(
                 )
             sub.status = new_status
             bounty.updated_at = datetime.now(timezone.utc)
-            
+
             audit_event(
                 "submission_status_updated",
                 bounty_id=bounty_id,
                 submission_id=submission_id,
-                new_status=status
+                new_status=status,
             )
-            
+
             return _to_submission_response(sub), None
 
     return None, "Submission not found"

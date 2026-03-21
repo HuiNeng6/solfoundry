@@ -68,9 +68,15 @@ def count_tier_completions(history: list[ReputationHistoryEntry]) -> dict[int, i
 
 def determine_current_tier(tier_counts: dict[int, int]) -> ContributorTier:
     """Determine highest tier: T1 (anyone), T2 (4 T1s), T3 (3 T2s)."""
-    if tier_counts.get(2, 0) >= TIER_REQUIREMENTS[ContributorTier.T3]["merged_bounties"]:
+    if (
+        tier_counts.get(2, 0)
+        >= TIER_REQUIREMENTS[ContributorTier.T3]["merged_bounties"]
+    ):
         return ContributorTier.T3
-    if tier_counts.get(1, 0) >= TIER_REQUIREMENTS[ContributorTier.T2]["merged_bounties"]:
+    if (
+        tier_counts.get(1, 0)
+        >= TIER_REQUIREMENTS[ContributorTier.T2]["merged_bounties"]
+    ):
         return ContributorTier.T2
     return ContributorTier.T1
 
@@ -202,9 +208,11 @@ def get_reputation(
     total = sum(e.earned_reputation for e in history)
     tier_counts = count_tier_completions(history)
     current_tier = determine_current_tier(tier_counts)
-    average = round(
-        sum(e.review_score for e in history) / len(history), 2
-    ) if history else 0.0
+    average = (
+        round(sum(e.review_score for e in history) / len(history), 2)
+        if history
+        else 0.0
+    )
 
     recent_history: list[ReputationHistoryEntry] = []
     if include_history:
@@ -226,7 +234,9 @@ def get_reputation(
     )
 
 
-def get_reputation_leaderboard(limit: int = 20, offset: int = 0) -> list[ReputationSummary]:
+def get_reputation_leaderboard(
+    limit: int = 20, offset: int = 0
+) -> list[ReputationSummary]:
     """Get contributors ranked by reputation score descending.
 
     Builds lightweight summaries (no per-entry history) for performance.
@@ -238,11 +248,12 @@ def get_reputation_leaderboard(limit: int = 20, offset: int = 0) -> list[Reputat
     """
     all_ids = contributor_service.list_contributor_ids()
     summaries = [
-        s for cid in all_ids
+        s
+        for cid in all_ids
         if (s := get_reputation(cid, include_history=False)) is not None
     ]
     summaries.sort(key=lambda s: (-s.reputation_score, s.username))
-    return summaries[offset: offset + limit]
+    return summaries[offset : offset + limit]
 
 
 def get_history(contributor_id: str) -> list[ReputationHistoryEntry]:

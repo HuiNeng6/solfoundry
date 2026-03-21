@@ -38,8 +38,10 @@ MOCK_USER = UserResponse(
     updated_at="2026-03-20T22:00:00Z",
 )
 
+
 async def override_get_current_user():
     return MOCK_USER
+
 
 # ---------------------------------------------------------------------------
 # Test app & client
@@ -592,7 +594,10 @@ class TestStatusTransitions:
     """Exhaustively verify every invalid status transition is rejected."""
 
     def test_transition_map_integrity(self):
-        assert VALID_STATUS_TRANSITIONS[BountyStatus.OPEN] == {BountyStatus.IN_PROGRESS, BountyStatus.CANCELLED}
+        assert VALID_STATUS_TRANSITIONS[BountyStatus.OPEN] == {
+            BountyStatus.IN_PROGRESS,
+            BountyStatus.CANCELLED,
+        }
         assert VALID_STATUS_TRANSITIONS[BountyStatus.PAID] == set()
         for s in BountyStatus:
             assert s in VALID_STATUS_TRANSITIONS

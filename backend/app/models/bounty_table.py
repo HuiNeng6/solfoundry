@@ -13,7 +13,7 @@ from sqlalchemy import (
     Index,
     JSON,
 )
-from sqlalchemy.dialects.postgresql import UUID, TSVECTOR
+from sqlalchemy.dialects.postgresql import UUID
 
 from app.database import Base
 
@@ -46,7 +46,9 @@ class BountyTable(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
-    search_vector = Column(Text, nullable=True) # Fallback for SQLite; TSVECTOR is PG-only
+    search_vector = Column(
+        Text, nullable=True
+    )  # Fallback for SQLite; TSVECTOR is PG-only
 
     __table_args__ = (
         Index("ix_bounties_search_vector", search_vector),

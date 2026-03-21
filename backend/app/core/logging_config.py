@@ -4,7 +4,6 @@ import sys
 from logging.handlers import TimedRotatingFileHandler
 import structlog
 from pythonjsonlogger import jsonlogger
-from typing import Any, Dict
 
 LOG_DIR = os.getenv("LOG_DIR", "logs")
 if not os.path.exists(LOG_DIR):
@@ -12,9 +11,10 @@ if not os.path.exists(LOG_DIR):
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
+
 def setup_logging():
     """Configure structured logging for the application."""
-    
+
     # 1. Standard Logging Configuration
     shared_processors = [
         structlog.contextvars.merge_contextvars,
@@ -30,25 +30,19 @@ def setup_logging():
         os.path.join(LOG_DIR, "application.log"),
         when="midnight",
         interval=1,
-        backupCount=7
+        backupCount=7,
     )
     app_handler.setFormatter(jsonlogger.JsonFormatter())
-    
+
     # Handler for access logs (JSON)
     access_handler = TimedRotatingFileHandler(
-        os.path.join(LOG_DIR, "access.log"),
-        when="midnight",
-        interval=1,
-        backupCount=7
+        os.path.join(LOG_DIR, "access.log"), when="midnight", interval=1, backupCount=7
     )
     access_handler.setFormatter(jsonlogger.JsonFormatter())
 
     # Handler for error logs (JSON)
     error_handler = TimedRotatingFileHandler(
-        os.path.join(LOG_DIR, "error.log"),
-        when="midnight",
-        interval=1,
-        backupCount=7
+        os.path.join(LOG_DIR, "error.log"), when="midnight", interval=1, backupCount=7
     )
     error_handler.setLevel(logging.ERROR)
     error_handler.setFormatter(jsonlogger.JsonFormatter())
@@ -58,7 +52,7 @@ def setup_logging():
         os.path.join(LOG_DIR, "audit.log"),
         when="midnight",
         interval=1,
-        backupCount=30 # Longer retention for audit
+        backupCount=30,  # Longer retention for audit
     )
     audit_handler.setFormatter(jsonlogger.JsonFormatter())
 
@@ -68,13 +62,13 @@ def setup_logging():
         console_handler.setFormatter(jsonlogger.JsonFormatter())
     else:
         # Use structlog's ConsoleRenderer for dev
-        pass 
+        pass
 
     # Root logger config
     logging.basicConfig(
         level=LOG_LEVEL,
         format="%(message)s",
-        handlers=[console_handler, app_handler, error_handler]
+        handlers=[console_handler, app_handler, error_handler],
     )
 
     # Specific loggers
@@ -86,7 +80,8 @@ def setup_logging():
 
     # 2. Structlog Configuration
     structlog.configure(
-        processors=shared_processors + [
+        processors=shared_processors
+        + [
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
@@ -96,13 +91,16 @@ def setup_logging():
     # Formatter for structlog -> stdlib
     is_prod = os.getenv("ENV") == "production"
     formatter = structlog.stdlib.ProcessorFormatter(
-        processor=structlog.processors.JSONRenderer() if is_prod else structlog.dev.ConsoleRenderer(),
+        processor=structlog.processors.JSONRenderer()
+        if is_prod
+        else structlog.dev.ConsoleRenderer(),
     )
     console_handler.setFormatter(formatter)
     app_handler.setFormatter(jsonlogger.JsonFormatter())
     access_handler.setFormatter(jsonlogger.JsonFormatter())
     error_handler.setFormatter(jsonlogger.JsonFormatter())
     audit_handler.setFormatter(jsonlogger.JsonFormatter())
+
 
 def get_audit_logger():
     """Return a logger specifically for audit events."""

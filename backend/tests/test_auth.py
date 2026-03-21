@@ -8,15 +8,17 @@ This module tests:
 - Protected routes
 """
 
-import pytest
+import asyncio
 import base64
 from datetime import datetime, timezone, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 from solders.keypair import Keypair
 
 from app.main import app
 from app.services import auth_service
+from app.database import async_session_factory
 
 auth_service.GITHUB_CLIENT_ID = "test-client-id"
 
@@ -33,18 +35,15 @@ def test_keypair():
     return Keypair()
 
 
-import asyncio
-from app.database import async_session_factory, Base, engine, get_db
-
 @pytest.fixture
 def auth_headers(client):
     """Create auth headers by doing GitHub OAuth login (simulated)."""
     import uuid
     from app.models.user import User
-    
+
     user_uuid = uuid.uuid4()
     user_id = str(user_uuid)
-    
+
     async def _create_user():
         async with async_session_factory() as session:
             user = User(
@@ -56,7 +55,7 @@ def auth_headers(client):
             )
             session.add(user)
             await session.commit()
-            
+
     asyncio.run(_create_user())
 
     # Generate token

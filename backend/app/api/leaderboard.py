@@ -25,7 +25,11 @@ _RANGE_MAP = {
 }
 
 
-@router.get("/", summary="Get leaderboard", description="Ranked list of contributors by $FNDRY earned.")
+@router.get(
+    "/",
+    summary="Get leaderboard",
+    description="Ranked list of contributors by $FNDRY earned.",
+)
 @router.get("", include_in_schema=False)
 async def leaderboard(
     period: Optional[TimePeriod] = Query(

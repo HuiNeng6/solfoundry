@@ -20,5 +20,6 @@ pytest_plugins = ("pytest_asyncio",)
 def init_test_db():
     """Initialize database schema once for the entire test session."""
     from app.database import init_db
+
     asyncio.run(init_db())
     yield

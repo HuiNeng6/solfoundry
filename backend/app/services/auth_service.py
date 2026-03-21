@@ -375,13 +375,11 @@ async def link_wallet_to_user(
 
     await db.commit()
     await db.refresh(user)
-    
+
     audit_event(
-        "auth_wallet_linked",
-        user_id=str(user.id),
-        wallet_address=user.wallet_address
+        "auth_wallet_linked", user_id=str(user.id), wallet_address=user.wallet_address
     )
-    
+
     return {
         "success": True,
         "message": "Wallet linked",
