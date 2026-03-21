@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
+from app.api.auth import get_current_user
+from app.models.user import UserResponse
 from app.api.bounties import router as bounties_router
 from app.models.bounty import (
     BountyCreate,
@@ -25,11 +27,31 @@ from app.core.logging_config import get_correlation_id
 from app.services import bounty_service
 
 # ---------------------------------------------------------------------------
+# Auth Mock
+# ---------------------------------------------------------------------------
+
+MOCK_USER = UserResponse(
+    id="test-user-id",
+    github_id="test-github-id",
+    username="testuser",
+    email="test@example.com",
+    avatar_url="http://example.com/avatar.png",
+    wallet_address="test-wallet-address",
+    wallet_verified=True,
+    created_at="2026-03-20T22:00:00Z",
+    updated_at="2026-03-20T22:00:00Z",
+)
+
+async def override_get_current_user():
+    return MOCK_USER
+
+# ---------------------------------------------------------------------------
 # Test app & client
 # ---------------------------------------------------------------------------
 
 _test_app = FastAPI()
 _test_app.include_router(bounties_router)
+_test_app.dependency_overrides[get_current_user] = override_get_current_user
 
 
 @_test_app.exception_handler(AppException)
@@ -112,7 +134,7 @@ def clear_store():
 
 def _create_bounty(**overrides) -> dict:
     """Helper: create a bounty via the service and return its dict."""
-    payload = {**VALID_BOUNTY, **overrides}
+    payload = {"created_by": MOCK_USER.wallet_address, **VALID_BOUNTY, **overrides}
     return bounty_service.create_bounty(BountyCreate(**payload)).model_dump()
 
 
@@ -164,7 +186,7 @@ class TestCreateBounty:
         resp = client.post("/api/bounties", json=payload)
         assert resp.status_code == 201
         body = resp.json()
-        assert body["created_by"] == "alice"
+        assert body["created_by"] == MOCK_USER.wallet_address
         assert body["github_issue_url"] == "https://github.com/org/repo/issues/42"
         assert "2026-12-31" in body["deadline"]
 
@@ -176,7 +198,7 @@ class TestCreateBounty:
         body = resp.json()
         assert body["description"] == ""
         assert body["tier"] == 2
-        assert body["created_by"] == "system"
+        assert body["created_by"] == MOCK_USER.wallet_address
         assert body["required_skills"] == []
 
     def test_create_invalid_title_empty(self):
@@ -319,8 +341,10 @@ class TestListBounties:
             "reward_amount",
             "status",
             "required_skills",
+            "github_issue_url",
             "deadline",
             "created_by",
+            "submissions",
             "submission_count",
             "created_at",
             "github_issue_url",
@@ -623,7 +647,7 @@ class TestStatusTransitions:
     """Exhaustively verify every invalid status transition is rejected."""
 
     def test_transition_map_integrity(self):
-        assert VALID_STATUS_TRANSITIONS[BountyStatus.OPEN] == {BountyStatus.IN_PROGRESS}
+        assert VALID_STATUS_TRANSITIONS[BountyStatus.OPEN] == {BountyStatus.IN_PROGRESS, BountyStatus.CANCELLED}
         assert VALID_STATUS_TRANSITIONS[BountyStatus.PAID] == set()
         for s in BountyStatus:
             assert s in VALID_STATUS_TRANSITIONS
@@ -716,7 +740,7 @@ class TestSubmitSolution:
         body = resp.json()
         assert body["pr_url"] == "https://github.com/org/repo/pull/42"
         assert body["bounty_id"] == bid
-        assert body["submitted_by"] == "alice"
+        assert body["submitted_by"] == MOCK_USER.wallet_address
         assert body["notes"] is None
         assert "id" in body
         assert "submitted_at" in body
@@ -918,6 +942,8 @@ class TestGetSubmissions:
             "pr_url",
             "submitted_by",
             "notes",
+            "status",
+            "ai_score",
             "submitted_at",
         }
         assert set(sub.keys()) == expected_keys

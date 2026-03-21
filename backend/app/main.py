@@ -1,76 +1,16 @@
-"""FastAPI application entry point.
-
-SolFoundry is the first marketplace where AI agents and human developers
-discover bounties, submit work, get reviewed by multi-LLM pipelines,
-and receive instant on-chain payouts on Solana.
-
-## Key Features
-
-- **Bounty Management**: Create, search, and manage bounties with tiered rewards
-- **Contributor Profiles**: Track reputation, earnings, and completed work
-- **Real-time Notifications**: Stay informed about bounty events
-- **GitHub Integration**: Webhooks for automated bounty creation and PR tracking
-- **On-chain Payouts**: Automatic $FNDRY token rewards to Solana wallets
-- **Structured Logging**: Correlation IDs and separate log streams
-- **Global Error Handling**: Consistent error responses across all endpoints
-
-## Authentication
-
-All authenticated endpoints support two methods:
-
-1. **Bearer Token** (Production): Include `Authorization: Bearer <token>` header
-2. **X-User-ID Header** (Development): Include `X-User-ID: <uuid>` header
-
-## Rate Limits
-
-| Endpoint Group | Rate Limit |
-|----------------|------------|
-| Bounty Search | 100 req/min |
-| Bounty CRUD | 30 req/min |
-| Notifications | 60 req/min |
-| Leaderboard | 100 req/min |
-| Webhooks | Unlimited |
-
-## Error Response Format
-
-All errors follow the ErrorResponse format:
-```json
-{
-  "error": "ERROR_CODE",
-  "message": "Human-readable error message",
-  "correlation_id": "uuid-for-tracing",
-  "timestamp": "2024-01-15T10:30:00Z",
-  "path": "/api/endpoint"
-}
-```
-
-Common error codes:
-- `VALIDATION_ERROR` - Invalid input data (400, 422)
-- `UNAUTHORIZED` - Missing or invalid authentication (401)
-- `FORBIDDEN` - Insufficient permissions (403)
-- `NOT_FOUND` - Resource does not exist (404)
-- `CONFLICT` - Resource already exists (409)
-- `RATE_LIMITED` - Rate limit exceeded (429)
-- `INTERNAL_ERROR` - Server-side error (500)
-- `SERVICE_UNAVAILABLE` - Dependency unavailable (503)
-
-## Response Metadata
-
-All list endpoints include pagination metadata:
-- `total`: Total number of items
-- `skip`: Current offset
-- `limit`: Items per page
-"""
+"""FastAPI application entry point."""
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
-from pydantic import ValidationError as PydanticValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core.logging_config import setup_logging
+from app.middleware.logging_middleware import LoggingMiddleware
 from app.api.auth import router as auth_router
 from app.api.contributors import router as contributors_router
 from app.api.bounties import router as bounties_router
@@ -79,345 +19,140 @@ from app.api.leaderboard import router as leaderboard_router
 from app.api.payouts import router as payouts_router
 from app.api.webhooks.github import router as github_webhook_router
 from app.api.websocket import router as websocket_router
-from app.database import init_db, close_db
-from app.core.logging_config import (
-    setup_logging_with_cleanup,
-    get_logger,
-    get_correlation_id,
-)
-from app.core.middleware import (
-    CorrelationIdMiddleware,
-    AccessLoggingMiddleware,
-)
-from app.core.errors import AppException
-from app.core.health import router as health_router, set_app_start_time
+from app.api.agents import router as agents_router
+from app.database import init_db, close_db, engine
+from app.services.auth_service import AuthError
 from app.services.websocket_manager import manager as ws_manager
 from app.services.github_sync import sync_all, periodic_sync
 
-# Initialize logging system with log cleanup
-setup_logging_with_cleanup()
-logger = get_logger(__name__)
+# Initialize logging
+setup_logging()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler for startup and shutdown.
+    """Application lifespan handler for startup and shutdown."""
+    await init_db()
+    await ws_manager.init()
 
-    Startup:
-    - Set app start time for uptime calculation
-    - Initialize database connection and schema
-    - Initialize WebSocket manager
-    - Sync bounties + contributors from GitHub Issues
-    - Start periodic sync background task
-    - Log application startup
-
-    Shutdown:
-    - Cancel background sync task
-    - Close WebSocket connections
-    - Close database connections
-    - Log application shutdown
-    """
-    logger.info(
-        "Application starting up",
-        extra={
-            "extra_data": {
-                "version": "0.1.0",
-                "environment": "development",
-            }
-        },
-    )
-
+    # Sync bounties + contributors from GitHub Issues (replaces static seeds)
     try:
-        # Set app start time for uptime calculation
-        set_app_start_time()
-        
-        # Initialize database
-        await init_db()
-        logger.info("Database initialized successfully")
+        result = await sync_all()
+        logger.info(
+            "GitHub sync complete: %d bounties, %d contributors",
+            result["bounties"],
+            result["contributors"],
+        )
+    except Exception as e:
+        logger.error("GitHub sync failed on startup: %s — falling back to seeds", e)
+        # Fall back to static seed data if GitHub sync fails
+        from app.seed_data import seed_bounties
 
-        # Initialize WebSocket manager
-        await ws_manager.init()
+        seed_bounties()
+        from app.seed_leaderboard import seed_leaderboard
 
-        # Sync bounties + contributors from GitHub Issues (replaces static seeds)
-        try:
-            result = await sync_all()
-            logger.info(
-                "GitHub sync complete: %d bounties, %d contributors",
-                result["bounties"],
-                result["contributors"],
-            )
-        except Exception as e:
-            logger.error("GitHub sync failed on startup: %s — falling back to seeds", e)
-            # Fall back to static seed data if GitHub sync fails
-            from app.seed_data import seed_bounties
+        seed_leaderboard()
 
-            seed_bounties()
-            from app.seed_leaderboard import seed_leaderboard
+    # Start periodic sync in background (every 5 minutes)
+    sync_task = asyncio.create_task(periodic_sync())
 
-            seed_leaderboard()
+    yield
 
-        # Start periodic sync in background (every 5 minutes)
-        sync_task = asyncio.create_task(periodic_sync())
-
-        yield
-
-        # Shutdown: Cancel background sync, close connections, then database
-        sync_task.cancel()
-        try:
-            await sync_task
-        except asyncio.CancelledError:
-            pass
-        await ws_manager.shutdown()
-
-    finally:
-        # Cleanup
-        logger.info("Application shutting down")
-        await close_db()
-        logger.info("Database connections closed")
+    # Shutdown: Cancel background sync, close connections, then database
+    sync_task.cancel()
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        pass
+    await ws_manager.shutdown()
+    await close_db()
 
 
-# OpenAPI tags metadata
-tags_metadata = [
-    {
-        "name": "bounties",
-        "description": "Bounty management operations. Search, create, and manage bounties with tiered rewards.",
-    },
-    {
-        "name": "contributors",
-        "description": "Contributor profile management. Track reputation, earnings, and skills.",
-    },
-    {
-        "name": "notifications",
-        "description": "Real-time notifications for bounty events. Requires authentication.",
-    },
-    {
-        "name": "leaderboard",
-        "description": "Contributor rankings by $FNDRY earned. Supports time periods and filters.",
-    },
-    {
-        "name": "webhooks",
-        "description": "GitHub webhook integration for automated bounty creation and PR tracking.",
-    },
-    {
-        "name": "health",
-        "description": "Health check endpoints for monitoring and Kubernetes probes.",
-    },
-]
-
-
-# Create FastAPI application
 app = FastAPI(
-    title="SolFoundry API",
-    description=__doc__,
-    version="1.0.0",
+    title="SolFoundry Backend",
+    description="Autonomous AI Software Factory on Solana",
+    version="0.1.0",
     lifespan=lifespan,
-    openapi_tags=tags_metadata,
-    contact={
-        "name": "SolFoundry",
-        "url": "https://solfoundry.org",
-        "email": "support@solfoundry.org",
-    },
-    license_info={
-        "name": "MIT License",
-        "url": "https://opensource.org/licenses/MIT",
-    },
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
 )
 
-# CORS configuration
 ALLOWED_ORIGINS = [
-    "https://solfoundry.dev",
-    "https://www.solfoundry.dev",
     "https://solfoundry.org",
     "https://www.solfoundry.org",
     "http://localhost:3000",  # Local dev only
     "http://localhost:5173",  # Vite dev server
 ]
 
-# Add CORS middleware (order matters - must be before other middleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=[
-        "Content-Type",
-        "Authorization",
-        "X-Correlation-ID",
-        "X-Request-ID",
-    ],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
-# Add custom middleware (order matters - last added runs first)
-# 1. Access logging middleware - logs all requests (needs correlation ID)
-app.add_middleware(AccessLoggingMiddleware)
+app.add_middleware(LoggingMiddleware)
 
-# 2. Correlation ID middleware - adds request tracing (must run first)
-app.add_middleware(CorrelationIdMiddleware)
+# ── Global Exception Handlers ────────────────────────────────────────────────
 
-
-# ── Exception Handlers ──────────────────────────────────────────────────────
-@app.exception_handler(AppException)
-async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
-    """Handle custom application exceptions."""
-    correlation_id = get_correlation_id() or "unknown"
-
-    logger.error(
-        f"Application error: {exc.message}",
-        extra={
-            "extra_data": {
-                "error_code": exc.error_code.value,
-                "status_code": exc.status_code,
-                "path": request.url.path,
-                "method": request.method,
-            }
-        },
-    )
-
-    response = exc.to_response(
-        correlation_id=correlation_id,
-        path=request.url.path,
-    )
-
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """Handle HTTP exceptions with structured JSON."""
+    request_id = getattr(request.state, "request_id", None)
     return JSONResponse(
         status_code=exc.status_code,
-        content=response.model_dump(mode="json", exclude_none=True),
-        headers={"X-Correlation-ID": correlation_id, **(exc.headers or {})},
+        content={
+            "error": exc.detail,
+            "request_id": request_id,
+            "code": f"HTTP_{exc.status_code}"
+        }
     )
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(
-    request: Request, exc: RequestValidationError
-) -> JSONResponse:
-    """Handle FastAPI request validation errors."""
-    from app.core.errors import ValidationException, ErrorDetail
-
-    correlation_id = get_correlation_id() or "unknown"
-
-    details = [
-        ErrorDetail(
-            field=".".join(str(loc) for loc in error["loc"]),
-            message=error["msg"],
-            code=error["type"],
-        )
-        for error in exc.errors()
-    ]
-
-    validation_exc = ValidationException(
-        message="Validation failed",
-        details=details,
-    )
-
-    logger.warning(
-        "Request validation error",
-        extra={
-            "extra_data": {
-                "path": request.url.path,
-                "method": request.method,
-                "errors": exc.errors(),
-            }
-        },
-    )
-
-    response = validation_exc.to_response(
-        correlation_id=correlation_id,
-        path=request.url.path,
-    )
-
-    return JSONResponse(
-        status_code=422,
-        content=response.model_dump(mode="json", exclude_none=True),
-        headers={"X-Correlation-ID": correlation_id},
-    )
-
-
-@app.exception_handler(PydanticValidationError)
-async def pydantic_validation_exception_handler(
-    request: Request, exc: PydanticValidationError
-) -> JSONResponse:
-    """Handle Pydantic validation errors."""
-    from app.core.errors import ValidationException, ErrorDetail
-
-    correlation_id = get_correlation_id() or "unknown"
-
-    details = [
-        ErrorDetail(
-            field=".".join(str(loc) for loc in error["loc"]),
-            message=error["msg"],
-            code=error["type"],
-        )
-        for error in exc.errors()
-    ]
-
-    validation_exc = ValidationException(
-        message="Validation failed",
-        details=details,
-    )
-
-    logger.warning(
-        "Pydantic validation error",
-        extra={
-            "extra_data": {
-                "path": request.url.path,
-                "method": request.method,
-                "errors": exc.errors(),
-            }
-        },
-    )
-
-    response = validation_exc.to_response(
-        correlation_id=correlation_id,
-        path=request.url.path,
-    )
-
-    return JSONResponse(
-        status_code=422,
-        content=response.model_dump(mode="json", exclude_none=True),
-        headers={"X-Correlation-ID": correlation_id},
-    )
-
 
 @app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Handle unexpected exceptions."""
-    from app.core.errors import InternalServerException
-
-    correlation_id = get_correlation_id() or "unknown"
-
-    logger.exception(
-        f"Unexpected error: {type(exc).__name__}: {str(exc)}",
-        extra={
-            "extra_data": {
-                "path": request.url.path,
-                "method": request.method,
-                "exception_type": type(exc).__name__,
-            }
-        },
-    )
-
-    internal_exc = InternalServerException(
-        message="An unexpected error occurred. Please try again later.",
-    )
-
-    response = internal_exc.to_response(
-        correlation_id=correlation_id,
-        path=request.url.path,
-    )
-
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch-all exception handler for unexpected errors."""
+    import structlog
+    log = structlog.get_logger(__name__)
+    
+    request_id = getattr(request.state, "request_id", None)
+    
+    # Log the full traceback for unhandled exceptions
+    log.error("unhandled_exception", exc_info=exc, request_id=request_id)
+    
     return JSONResponse(
         status_code=500,
-        content=response.model_dump(mode="json", exclude_none=True),
-        headers={"X-Correlation-ID": correlation_id},
+        content={
+            "error": "Internal Server Error",
+            "request_id": request_id,
+            "code": "INTERNAL_ERROR"
+        }
     )
 
+@app.exception_handler(AuthError)
+async def auth_exception_handler(request: Request, exc: AuthError):
+    """Handle Authentication errors with structured JSON."""
+    request_id = getattr(request.state, "request_id", None)
+    return JSONResponse(
+        status_code=401,
+        content={
+            "error": str(exc),
+            "request_id": request_id,
+            "code": "AUTH_ERROR"
+        }
+    )
 
-# ── Route Registration ──────────────────────────────────────────────────────
-# Health check endpoints (no prefix)
-app.include_router(health_router)
-
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    """Handle ValueErrors (validation) with structured JSON."""
+    request_id = getattr(request.state, "request_id", None)
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": str(exc),
+            "request_id": request_id,
+            "code": "VALIDATION_ERROR"
+        }
+    )
 # Auth: /auth/* (prefix defined in router)
 app.include_router(auth_router)
 
@@ -442,24 +177,38 @@ app.include_router(github_webhook_router, prefix="/api/webhooks", tags=["webhook
 # WebSocket: /ws/*
 app.include_router(websocket_router)
 
+# Agents: router has /api/agents prefix — Agent Registration API (Issue #203)
+app.include_router(agents_router)
+
+
+@app.get("/health")
+async def health_check():
+    from app.services.github_sync import get_last_sync
+    from app.services.bounty_service import _bounty_store
+    from app.services.contributor_service import _store
+    from sqlalchemy import text
+
+    db_status = "ok"
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as e:
+        logger.error("Health check DB failure: %s", e)
+        db_status = "error"
+
+    last_sync = get_last_sync()
+    return {
+        "status": "ok" if db_status == "ok" else "degraded",
+        "database": db_status,
+        "bounties": len(_bounty_store),
+        "contributors": len(_store),
+        "last_sync": last_sync.isoformat() if last_sync else None,
+        "version": "0.1.0",
+    }
+
 
 @app.post("/api/sync", tags=["admin"])
 async def trigger_sync():
-    """
-    Manually trigger a GitHub → bounty/leaderboard sync.
-
-    ## Use Case
-
-    Force an immediate sync instead of waiting for the periodic sync (every 5 minutes).
-
-    ## Response
-
-    ```json
-    {
-      "bounties": 25,
-      "contributors": 10
-    }
-    ```
-    """
+    """Manually trigger a GitHub → bounty/leaderboard sync."""
     result = await sync_all()
     return result
