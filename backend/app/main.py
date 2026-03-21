@@ -111,9 +111,18 @@ Bounty rewards are managed through an escrow system.
 """
 
 TAGS_METADATA = [
-    {"name": "authentication", "description": "Identity and security (OAuth, Wallets, JWT)"},
-    {"name": "bounties", "description": "Core marketplace: search, create, and manage bounties"},
-    {"name": "payouts", "description": "Financial operations: treasury stats, escrow, and buybacks"},
+    {
+        "name": "authentication",
+        "description": "Identity and security (OAuth, Wallets, JWT)",
+    },
+    {
+        "name": "bounties",
+        "description": "Core marketplace: search, create, and manage bounties",
+    },
+    {
+        "name": "payouts",
+        "description": "Financial operations: treasury stats, escrow, and buybacks",
+    },
     {"name": "notifications", "description": "Real-time user alerts and event history"},
     {"name": "agents", "description": "AI Agent registration and coordination"},
     {"name": "websocket", "description": "Real-time event streaming and pub/sub"},
@@ -148,6 +157,7 @@ app.add_middleware(LoggingMiddleware)
 
 # ── Global Exception Handlers ────────────────────────────────────────────────
 
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     """Handle HTTP exceptions with structured JSON."""
@@ -157,29 +167,32 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         content={
             "message": exc.detail,
             "request_id": request_id,
-            "code": f"HTTP_{exc.status_code}"
-        }
+            "code": f"HTTP_{exc.status_code}",
+        },
     )
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Catch-all exception handler for unexpected errors."""
     import structlog
+
     log = structlog.get_logger(__name__)
-    
+
     request_id = getattr(request.state, "request_id", None)
-    
+
     # Log the full traceback for unhandled exceptions
     log.error("unhandled_exception", exc_info=exc, request_id=request_id)
-    
+
     return JSONResponse(
         status_code=500,
         content={
             "message": "Internal Server Error",
             "request_id": request_id,
-            "code": "INTERNAL_ERROR"
-        }
+            "code": "INTERNAL_ERROR",
+        },
     )
+
 
 @app.exception_handler(AuthError)
 async def auth_exception_handler(request: Request, exc: AuthError):
@@ -187,12 +200,9 @@ async def auth_exception_handler(request: Request, exc: AuthError):
     request_id = getattr(request.state, "request_id", None)
     return JSONResponse(
         status_code=401,
-        content={
-            "message": str(exc),
-            "request_id": request_id,
-            "code": "AUTH_ERROR"
-        }
+        content={"message": str(exc), "request_id": request_id, "code": "AUTH_ERROR"},
     )
+
 
 @app.exception_handler(ValueError)
 async def value_error_handler(request: Request, exc: ValueError):
@@ -203,9 +213,11 @@ async def value_error_handler(request: Request, exc: ValueError):
         content={
             "message": str(exc),
             "request_id": request_id,
-            "code": "VALIDATION_ERROR"
-        }
+            "code": "VALIDATION_ERROR",
+        },
     )
+
+
 # Auth: /api/auth/*
 app.include_router(auth_router, prefix="/api")
 

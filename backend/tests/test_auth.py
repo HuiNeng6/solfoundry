@@ -40,10 +40,10 @@ def auth_headers(client):
     """Create auth headers by doing GitHub OAuth login (simulated)."""
     import uuid
     from app.models.user import User
-    
+
     user_uuid = uuid.uuid4()
     user_id = str(user_uuid)
-    
+
     async def _create_user():
         async with async_session_factory() as session:
             user = User(
@@ -55,7 +55,7 @@ def auth_headers(client):
             )
             session.add(user)
             await session.commit()
-            
+
     asyncio.run(_create_user())
 
     # Generate token

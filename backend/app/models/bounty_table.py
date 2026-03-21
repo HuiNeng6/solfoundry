@@ -46,7 +46,9 @@ class BountyTable(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
-    search_vector = Column(Text, nullable=True) # Fallback for SQLite; TSVECTOR is PG-only
+    search_vector = Column(
+        Text, nullable=True
+    )  # Fallback for SQLite; TSVECTOR is PG-only
 
     __table_args__ = (
         Index("ix_bounties_search_vector", search_vector),

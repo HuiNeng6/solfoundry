@@ -31,13 +31,17 @@ from app.models.user import UserResponse
 from app.services import bounty_service
 from app.services.bounty_search_service import BountySearchService
 
+
 async def _verify_bounty_ownership(bounty_id: str, user: UserResponse):
     bounty = bounty_service.get_bounty(bounty_id)
     if not bounty:
         raise HTTPException(status_code=404, detail="Bounty not found")
     if bounty.created_by not in (str(user.id), user.wallet_address):
-        raise HTTPException(status_code=403, detail="Not authorized to modify this bounty")
+        raise HTTPException(
+            status_code=403, detail="Not authorized to modify this bounty"
+        )
     return bounty
+
 
 router = APIRouter(prefix="/bounties", tags=["bounties"])
 
@@ -59,8 +63,7 @@ router = APIRouter(prefix="/bounties", tags=["bounties"])
     },
 )
 async def create_bounty(
-    data: BountyCreate,
-    user: UserResponse = Depends(get_current_user)
+    data: BountyCreate, user: UserResponse = Depends(get_current_user)
 ) -> BountyResponse:
     data.created_by = user.wallet_address or str(user.id)
     return bounty_service.create_bounty(data)
@@ -76,20 +79,33 @@ async def create_bounty(
     """,
 )
 async def list_bounties(
-    status: Optional[BountyStatus] = Query(None, description="Filter by current lifecycle status"),
-    tier: Optional[BountyTier] = Query(None, description="Filter by difficulty tier (1, 2, or 3)"),
+    status: Optional[BountyStatus] = Query(
+        None, description="Filter by current lifecycle status"
+    ),
+    tier: Optional[BountyTier] = Query(
+        None, description="Filter by difficulty tier (1, 2, or 3)"
+    ),
     skills: Optional[str] = Query(
         None, description="Comma-separated list of skills (e.g., 'python,rust')"
     ),
-    created_by: Optional[str] = Query(None, description="Filter by creator's username or wallet"),
+    created_by: Optional[str] = Query(
+        None, description="Filter by creator's username or wallet"
+    ),
     skip: int = Query(0, ge=0, description="Pagination offset"),
-    limit: int = Query(20, ge=1, le=100, description="Maximum number of items to return"),
+    limit: int = Query(
+        20, ge=1, le=100, description="Maximum number of items to return"
+    ),
 ) -> BountyListResponse:
     skill_list = (
         [s.strip().lower() for s in skills.split(",") if s.strip()] if skills else None
     )
     return bounty_service.list_bounties(
-        status=status, tier=tier, skills=skill_list, created_by=created_by, skip=skip, limit=limit
+        status=status,
+        tier=tier,
+        skills=skill_list,
+        created_by=created_by,
+        skip=skip,
+        limit=limit,
     )
 
 
@@ -113,7 +129,9 @@ async def _get_search_service(
     Supports PostgreSQL-backed indexing for speed and relevance.
     """,
     responses={
-        200: {"description": "Search results (ordered by relevance unless sort provided)"},
+        200: {
+            "description": "Search results (ordered by relevance unless sort provided)"
+        },
     },
 )
 async def search_bounties(
@@ -199,6 +217,7 @@ async def recommended_bounties(
 # CRUD endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.get(
     "/creator/{wallet_address}/stats",
     summary="Get escrow stats for a creator",
@@ -207,7 +226,13 @@ async def get_creator_stats(wallet_address: str):
     bounties_resp = bounty_service.list_bounties(created_by=wallet_address, limit=1000)
     staked, paid, refunded = 0, 0, 0
     for b in bounties_resp.items:
-        if b.status in (BountyStatus.OPEN, BountyStatus.IN_PROGRESS, BountyStatus.UNDER_REVIEW, BountyStatus.DISPUTED, BountyStatus.COMPLETED):
+        if b.status in (
+            BountyStatus.OPEN,
+            BountyStatus.IN_PROGRESS,
+            BountyStatus.UNDER_REVIEW,
+            BountyStatus.DISPUTED,
+            BountyStatus.COMPLETED,
+        ):
             staked += b.reward_amount
         elif b.status == BountyStatus.PAID:
             paid += b.reward_amount
@@ -238,9 +263,7 @@ async def get_bounty_detail(bounty_id: str) -> BountyResponse:
     summary="Partially update a bounty",
 )
 async def update_bounty(
-    bounty_id: str,
-    data: BountyUpdate,
-    user: UserResponse = Depends(get_current_user)
+    bounty_id: str, data: BountyUpdate, user: UserResponse = Depends(get_current_user)
 ) -> BountyResponse:
     await _verify_bounty_ownership(bounty_id, user)
     result, error = bounty_service.update_bounty(bounty_id, data)
@@ -256,15 +279,16 @@ async def update_bounty(
     summary="Delete a bounty",
 )
 async def delete_bounty(
-    bounty_id: str,
-    user: UserResponse = Depends(get_current_user)
+    bounty_id: str, user: UserResponse = Depends(get_current_user)
 ) -> None:
     await _verify_bounty_ownership(bounty_id, user)
     if not bounty_service.delete_bounty(bounty_id):
         raise HTTPException(status_code=404, detail="Bounty not found")
 
 
-@router.post("/{bounty_id}/submit", include_in_schema=False, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{bounty_id}/submit", include_in_schema=False, status_code=status.HTTP_201_CREATED
+)
 @router.post(
     "/{bounty_id}/submissions",
     response_model=SubmissionResponse,
@@ -276,7 +300,10 @@ async def delete_bounty(
     Submitting a solution moves the bounty to 'under_review'.
     """,
     responses={
-        400: {"model": ErrorResponse, "description": "Bounty is not accepting submissions"},
+        400: {
+            "model": ErrorResponse,
+            "description": "Bounty is not accepting submissions",
+        },
         401: {"model": ErrorResponse, "description": "Authentication required"},
         404: {"model": ErrorResponse, "description": "Bounty not found"},
     },
@@ -284,7 +311,7 @@ async def delete_bounty(
 async def submit_solution(
     bounty_id: str,
     data: SubmissionCreate,
-    user: UserResponse = Depends(get_current_user)
+    user: UserResponse = Depends(get_current_user),
 ) -> SubmissionResponse:
     data.submitted_by = user.wallet_address or str(user.id)
     result, error = bounty_service.submit_solution(bounty_id, data)
@@ -311,9 +338,6 @@ async def get_submissions(bounty_id: str) -> list[SubmissionResponse]:
     return result
 
 
-
-
-
 @router.patch(
     "/{bounty_id}/submissions/{submission_id}",
     response_model=SubmissionResponse,
@@ -321,7 +345,10 @@ async def get_submissions(bounty_id: str) -> list[SubmissionResponse]:
     description="Approve, reject, or request changes on a submission. Approving triggers the payout flow.",
     responses={
         400: {"model": ErrorResponse, "description": "Invalid status transition"},
-        403: {"model": ErrorResponse, "description": "Not authorized (not the bounty creator)"},
+        403: {
+            "model": ErrorResponse,
+            "description": "Not authorized (not the bounty creator)",
+        },
         404: {"model": ErrorResponse, "description": "Bounty or submission not found"},
     },
 )
@@ -329,10 +356,12 @@ async def update_submission(
     bounty_id: str,
     submission_id: str,
     data: SubmissionStatusUpdate,
-    user: UserResponse = Depends(get_current_user)
+    user: UserResponse = Depends(get_current_user),
 ) -> SubmissionResponse:
     await _verify_bounty_ownership(bounty_id, user)
-    result, error = bounty_service.update_submission(bounty_id, submission_id, data.status)
+    result, error = bounty_service.update_submission(
+        bounty_id, submission_id, data.status
+    )
     if error:
         status_code = 404 if "not found" in error.lower() else 400
         raise HTTPException(status_code=status_code, detail=error)
@@ -345,13 +374,15 @@ async def update_submission(
     summary="Cancel a bounty and trigger refund",
     description="Withdraw a bounty from the marketplace. Only possible if there are no approved submissions.",
     responses={
-        400: {"model": ErrorResponse, "description": "Cannot cancel (e.g., already paid)"},
+        400: {
+            "model": ErrorResponse,
+            "description": "Cannot cancel (e.g., already paid)",
+        },
         403: {"model": ErrorResponse, "description": "Not authorized"},
     },
 )
 async def cancel_bounty(
-    bounty_id: str,
-    user: UserResponse = Depends(get_current_user)
+    bounty_id: str, user: UserResponse = Depends(get_current_user)
 ) -> BountyResponse:
     await _verify_bounty_ownership(bounty_id, user)
     result, error = bounty_service.update_bounty(

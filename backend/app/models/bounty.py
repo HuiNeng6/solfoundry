@@ -40,13 +40,32 @@ class BountyStatus(str, Enum):
 
 VALID_STATUS_TRANSITIONS: dict[BountyStatus, set[BountyStatus]] = {
     BountyStatus.OPEN: {BountyStatus.IN_PROGRESS, BountyStatus.CANCELLED},
-    BountyStatus.IN_PROGRESS: {BountyStatus.COMPLETED, BountyStatus.OPEN, BountyStatus.UNDER_REVIEW, BountyStatus.CANCELLED},
-    BountyStatus.UNDER_REVIEW: {BountyStatus.COMPLETED, BountyStatus.IN_PROGRESS, BountyStatus.DISPUTED, BountyStatus.CANCELLED},
-    BountyStatus.COMPLETED: {BountyStatus.PAID, BountyStatus.IN_PROGRESS, BountyStatus.DISPUTED},
-    BountyStatus.DISPUTED: {BountyStatus.COMPLETED, BountyStatus.CANCELLED, BountyStatus.IN_PROGRESS},
+    BountyStatus.IN_PROGRESS: {
+        BountyStatus.COMPLETED,
+        BountyStatus.OPEN,
+        BountyStatus.UNDER_REVIEW,
+        BountyStatus.CANCELLED,
+    },
+    BountyStatus.UNDER_REVIEW: {
+        BountyStatus.COMPLETED,
+        BountyStatus.IN_PROGRESS,
+        BountyStatus.DISPUTED,
+        BountyStatus.CANCELLED,
+    },
+    BountyStatus.COMPLETED: {
+        BountyStatus.PAID,
+        BountyStatus.IN_PROGRESS,
+        BountyStatus.DISPUTED,
+    },
+    BountyStatus.DISPUTED: {
+        BountyStatus.COMPLETED,
+        BountyStatus.CANCELLED,
+        BountyStatus.IN_PROGRESS,
+    },
     BountyStatus.PAID: set(),  # terminal
     BountyStatus.CANCELLED: set(),  # terminal
 }
+
 
 class SubmissionStatus(str, Enum):
     """Lifecycle status of a solution submission."""
@@ -57,8 +76,13 @@ class SubmissionStatus(str, Enum):
     PAID = "paid"
     REJECTED = "rejected"
 
+
 VALID_SUBMISSION_TRANSITIONS: dict[SubmissionStatus, set[SubmissionStatus]] = {
-    SubmissionStatus.PENDING: {SubmissionStatus.APPROVED, SubmissionStatus.DISPUTED, SubmissionStatus.REJECTED},
+    SubmissionStatus.PENDING: {
+        SubmissionStatus.APPROVED,
+        SubmissionStatus.DISPUTED,
+        SubmissionStatus.REJECTED,
+    },
     SubmissionStatus.APPROVED: {SubmissionStatus.PAID, SubmissionStatus.DISPUTED},
     SubmissionStatus.DISPUTED: {SubmissionStatus.APPROVED, SubmissionStatus.REJECTED},
     SubmissionStatus.PAID: set(),
@@ -167,7 +191,9 @@ class BountyBase(BaseModel):
         ...,
         max_length=DESCRIPTION_MAX_LENGTH,
         description="Detailed requirements and acceptance criteria (Markdown supported)",
-        examples=["We need to add PostgreSQL-backed full-text search to our existing bounty API..."],
+        examples=[
+            "We need to add PostgreSQL-backed full-text search to our existing bounty API..."
+        ],
     )
     tier: BountyTier = Field(
         ...,
@@ -228,8 +254,10 @@ class BountyBase(BaseModel):
 class BountyCreate(BountyBase):
     """Payload for creating a new bounty."""
 
-    description: str = Field("", max_length=DESCRIPTION_MAX_LENGTH) # Override default for creation
-    tier: BountyTier = BountyTier.T2 # Override default for creation
+    description: str = Field(
+        "", max_length=DESCRIPTION_MAX_LENGTH
+    )  # Override default for creation
+    tier: BountyTier = BountyTier.T2  # Override default for creation
 
 
 class BountyUpdate(BaseModel):
@@ -273,12 +301,26 @@ class BountyDB(BaseModel):
 class BountyResponse(BountyBase):
     """Full details of a bounty for API responses."""
 
-    id: str = Field(..., description="Unique UUID for the bounty", examples=["550e8400-e29b-41d4-a716-446655440000"])
-    status: BountyStatus = Field(..., description="Current state of the bounty", examples=[BountyStatus.OPEN])
-    created_at: datetime = Field(..., description="Timestamp when the bounty was created")
+    id: str = Field(
+        ...,
+        description="Unique UUID for the bounty",
+        examples=["550e8400-e29b-41d4-a716-446655440000"],
+    )
+    status: BountyStatus = Field(
+        ..., description="Current state of the bounty", examples=[BountyStatus.OPEN]
+    )
+    created_at: datetime = Field(
+        ..., description="Timestamp when the bounty was created"
+    )
     updated_at: datetime = Field(..., description="Timestamp of the last update")
-    github_issue_number: Optional[int] = Field(None, description="The GitHub issue number", examples=[123])
-    github_repo: Optional[str] = Field(None, description="The full repository name (org/repo)", examples=["codebestia/solfoundry"])
+    github_issue_number: Optional[int] = Field(
+        None, description="The GitHub issue number", examples=[123]
+    )
+    github_repo: Optional[str] = Field(
+        None,
+        description="The full repository name (org/repo)",
+        examples=["codebestia/solfoundry"],
+    )
 
     model_config = {"from_attributes": True}
     submissions: list[SubmissionResponse] = Field(default_factory=list)
