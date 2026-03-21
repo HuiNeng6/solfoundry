@@ -9,7 +9,7 @@
  * - Responsive design
  * - Accessible with proper ARIA labels
  */
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 interface ScrollToTopProps {
   /** Scroll threshold in pixels before button appears (default: 300) */
