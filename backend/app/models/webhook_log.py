@@ -30,7 +30,7 @@ class WebhookEventLogDB(Base):
     )  # processed, failed, skipped
     error_message = Column(Text, nullable=True)
     processed_at = Column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
     __table_args__ = (
