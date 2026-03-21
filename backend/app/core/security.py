@@ -10,8 +10,10 @@ This module provides security hardening utilities as per Issue #197:
 import re
 import html
 import logging
-from typing import Optional, Any
+from typing import Optional, Any, Set
 from urllib.parse import urlparse
+
+import bleach
 
 logger = logging.getLogger(__name__)
 
@@ -24,22 +26,23 @@ MAX_DESCRIPTION_LENGTH = 10000
 MAX_COMMENT_LENGTH = 5000
 MAX_WALLET_ADDRESS_LENGTH = 44
 
-# Dangerous HTML tags/patterns to strip
-DANGEROUS_PATTERNS = [
-    r"<\s*script[^>]*>.*?<\s*/\s*script\s*>",
-    r"<\s*iframe[^>]*>.*?<\s*/\s*iframe\s*>",
-    r"<\s*object[^>]*>.*?<\s*/\s*object\s*>",
-    r"<\s*embed[^>]*>.*?<\s*/\s*embed\s*>",
-    r"<\s*form[^>]*>.*?<\s*/\s*form\s*>",
-    r"javascript\s*:",
-    r"on\w+\s*=",
-    r"data\s*:",
-    r"vbscript\s*:",
-]
+# Allowed HTML tags for sanitized content
+ALLOWED_TAGS = ["p", "br", "b", "i", "u", "strong", "em", "ul", "ol", "li", "code", "pre", "a"]
+
+# Allowed HTML attributes (only safe href for anchor tags)
+ALLOWED_ATTRIBUTES = {
+    "a": ["href", "title", "rel"],
+}
+
+# Allowed URL schemes for href attributes
+ALLOWED_PROTOCOLS = ["http", "https", "mailto"]
 
 
 def sanitize_html(content: str, max_length: Optional[int] = None) -> str:
-    """Sanitize HTML content by removing dangerous elements and attributes.
+    """Sanitize HTML content using bleach library for robust XSS protection.
+    
+    Uses bleach.clean() with a proper HTML parser to remove dangerous elements
+    and attributes while preserving safe formatting.
     
     Args:
         content: The HTML content to sanitize.
@@ -56,23 +59,16 @@ def sanitize_html(content: str, max_length: Optional[int] = None) -> str:
         content = content[:max_length]
         logger.warning(f"Content truncated to {max_length} characters")
     
-    # Remove dangerous patterns
-    for pattern in DANGEROUS_PATTERNS:
-        content = re.sub(pattern, "", content, flags=re.IGNORECASE | re.DOTALL)
+    # Use bleach for robust, parser-based HTML sanitization
+    sanitized = bleach.clean(
+        content,
+        tags=ALLOWED_TAGS,
+        attributes=ALLOWED_ATTRIBUTES,
+        protocols=ALLOWED_PROTOCOLS,
+        strip=True,  # Remove disallowed tags entirely instead of escaping
+    )
     
-    # Escape remaining HTML to prevent XSS
-    # Allow basic formatting tags: p, br, b, i, u, strong, em, ul, ol, li, a, code, pre
-    allowed_tags = ["p", "br", "b", "i", "u", "strong", "em", "ul", "ol", "li", "code", "pre"]
-    
-    # First escape all HTML
-    escaped = html.escape(content)
-    
-    # Then unescape allowed tags
-    for tag in allowed_tags:
-        escaped = escaped.replace(f"&lt;{tag}&gt;", f"<{tag}>")
-        escaped = escaped.replace(f"&lt;/{tag}&gt;", f"</{tag}>")
-    
-    return escaped
+    return sanitized
 
 
 def sanitize_text(text: str, max_length: Optional[int] = None) -> str:
@@ -159,34 +155,65 @@ def validate_github_url(url: str) -> bool:
     parsed = urlparse(url)
     allowed_hosts = ["github.com", "www.github.com"]
     
-    if parsed.netloc.lower() not in allowed_hosts:
+    # Use hostname to avoid credential-based URLs like user:pass@github.com
+    if not parsed.hostname:
+        return False
+    
+    if parsed.hostname.lower() not in allowed_hosts:
         return False
     
     return True
 
 
-def sanitize_sql_identifier(identifier: str) -> str:
-    """Sanitize a SQL identifier (table name, column name, etc).
+# SQL identifier pattern: alphanumeric + underscore, starts with letter or underscore
+SQL_IDENTIFIER_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def is_valid_sql_identifier(identifier: str) -> bool:
+    """Check if a SQL identifier is valid (no transformation).
     
-    Only allows alphanumeric characters and underscores.
+    Valid identifiers:
+    - Only alphanumeric characters and underscores
+    - Starts with a letter or underscore
+    - Non-empty
     
     Args:
-        identifier: The SQL identifier to sanitize.
+        identifier: The SQL identifier to check.
     
     Returns:
-        Sanitized identifier or empty string if invalid.
+        True if valid, False otherwise.
     """
     if not identifier:
-        return ""
+        return False
+    return bool(SQL_IDENTIFIER_PATTERN.match(identifier))
+
+
+def sanitize_sql_identifier(identifier: str) -> str:
+    """Validate and return a SQL identifier (table name, column name, etc).
     
-    # Only allow alphanumeric and underscore
-    sanitized = re.sub(r"[^a-zA-Z0-9_]", "", identifier)
+    Only allows alphanumeric characters and underscores.
+    Raises ValueError for invalid identifiers instead of silently transforming.
     
-    # Must start with letter or underscore
-    if sanitized and not re.match(r"^[a-zA-Z_]", sanitized):
-        return ""
+    Args:
+        identifier: The SQL identifier to validate.
     
-    return sanitized
+    Returns:
+        The identifier if valid.
+    
+    Raises:
+        ValueError: If identifier is empty or contains invalid characters.
+    """
+    if not identifier:
+        raise ValueError("SQL identifier cannot be empty")
+    
+    if not SQL_IDENTIFIER_PATTERN.match(identifier):
+        raise ValueError(
+            f"Invalid SQL identifier '{identifier}': "
+            "must contain only alphanumeric characters and underscores, "
+            "and start with a letter or underscore"
+        )
+    
+    return identifier
 
 
 def escape_like_pattern(pattern: str) -> str:

@@ -29,7 +29,7 @@ BACKUP_CONFIG = {
     
     # WAL archiving (for PITR)
     "wal_archive_directory": os.getenv("WAL_ARCHIVE_DIR", "/var/lib/postgresql/wal_archive"),
-    "wal_keep_segments": int(os.getenv("WAL_KEEP_SEGMENTS", "64")),
+    "wal_keep_size": os.getenv("WAL_KEEP_SIZE", "1GB"),  # PostgreSQL 13+ uses wal_keep_size
     
     # Schedule (cron format)
     "full_backup_schedule": os.getenv("FULL_BACKUP_SCHEDULE", "0 2 * * *"),  # Daily at 2 AM
@@ -80,7 +80,7 @@ PITR_CONFIG = """
 # Write-Ahead Logging (WAL) for Point-in-Time Recovery
 wal_level = replica
 max_wal_senders = 3
-wal_keep_segments = {wal_keep_segments}
+wal_keep_size = {wal_keep_size}
 archive_mode = on
 archive_command = 'cp %p {wal_archive_dir}/%f'
 
@@ -165,7 +165,7 @@ def get_pitr_config() -> str:
         Configuration string to append to postgresql.conf.
     """
     return PITR_CONFIG.format(
-        wal_keep_segments=BACKUP_CONFIG["wal_keep_segments"],
+        wal_keep_size=BACKUP_CONFIG["wal_keep_size"],
         wal_archive_dir=BACKUP_CONFIG["wal_archive_directory"],
     )
 

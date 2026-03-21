@@ -181,8 +181,10 @@ result = await db.execute(
 CSP header restricts sources of executable scripts:
 
 ```http
-Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:;
+Content-Security-Policy: default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:;
 ```
+
+**Note:** The `script-src` directive does not include `'unsafe-inline'` to ensure XSS protection. For inline scripts, use nonces or script hashes (SRI) instead.
 
 ### HTML Sanitization
 

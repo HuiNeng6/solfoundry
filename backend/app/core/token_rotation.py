@@ -3,6 +3,8 @@
 Implements secure refresh token rotation to prevent token replay attacks.
 Each refresh token can only be used once, and a new refresh token is
 issued with each access token refresh.
+
+Uses Redis for production token storage to work across multiple workers.
 """
 
 import os
@@ -16,23 +18,27 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
+from app.core.redis import get_redis
 
 logger = logging.getLogger(__name__)
 
-# Configuration
-JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY") or secrets.token_urlsafe(32)
+# Configuration - fail fast if JWT_SECRET_KEY is not set
+_jwt_secret = os.getenv("JWT_SECRET_KEY")
+if not _jwt_secret:
+    raise ValueError(
+        "JWT_SECRET_KEY environment variable is required. "
+        "Set it to a secure random value (e.g., from `openssl rand -hex 32`)."
+    )
+JWT_SECRET_KEY = _jwt_secret
+
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
 REFRESH_TOKEN_FAMILY_SIZE = int(os.getenv("REFRESH_TOKEN_FAMILY_SIZE", "5"))
 
-# Token family for rotation detection (stored in Redis or database)
-# When a refresh token is used, the entire family should be invalidated
-# if reuse is detected (replay attack)
-
-# In-memory store for development (use Redis in production)
-_refresh_token_store: Dict[str, dict] = {}
-_token_families: Dict[str, list] = {}
+# Redis key prefixes
+RT_PREFIX = "rt:"      # rt:{family_id}:{jti} -> token data
+RT_USED_PREFIX = "rt:used:"  # rt:used:{family_id}:{jti} -> "1"
 
 
 def create_token_family_id(user_id: str) -> str:
@@ -79,7 +85,7 @@ def create_access_token(
     return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 
-def create_refresh_token(
+async def create_refresh_token(
     user_id: str,
     family_id: Optional[str] = None,
     expires_delta: Optional[timedelta] = None,
@@ -112,38 +118,30 @@ def create_refresh_token(
     
     token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     
-    # Store token in family
-    _store_token_in_family(family_id, jti, token)
+    # Store token in Redis
+    await _store_token_in_family(family_id, jti)
     
     return token, family_id
 
 
-def _store_token_in_family(family_id: str, jti: str, token: str) -> None:
-    """Store a refresh token in its family (in-memory, use Redis in production).
+async def _store_token_in_family(family_id: str, jti: str) -> None:
+    """Store a refresh token in its family using Redis.
     
     Args:
         family_id: The token family ID.
         jti: The token's unique ID.
-        token: The encoded token.
     """
-    if family_id not in _token_families:
-        _token_families[family_id] = []
-    
-    family = _token_families[family_id]
-    family.append({
-        "jti": jti,
-        "token": token,
-        "used": False,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
-    
-    # Limit family size to prevent memory bloat
-    if len(family) > REFRESH_TOKEN_FAMILY_SIZE:
-        # Remove oldest tokens
-        family.pop(0)
+    try:
+        redis = await get_redis()
+        key = f"{RT_PREFIX}{family_id}:{jti}"
+        ttl = REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600
+        await redis.setex(key, ttl, "1")
+    except Exception as e:
+        logger.error(f"Failed to store token in Redis: {e}")
+        # Don't fail the request, but log the error
 
 
-def _mark_token_used(family_id: str, jti: str) -> bool:
+async def _mark_token_used(family_id: str, jti: str) -> bool:
     """Mark a refresh token as used.
     
     Args:
@@ -151,36 +149,66 @@ def _mark_token_used(family_id: str, jti: str) -> bool:
         jti: The token's unique ID.
     
     Returns:
-        True if token was found and marked, False if already used (replay!).
+        True if token was successfully marked, False if already used (replay!).
     """
-    family = _token_families.get(family_id, [])
-    
-    for token_record in family:
-        if token_record["jti"] == jti:
-            if token_record["used"]:
-                # Token already used - potential replay attack!
-                logger.warning(
-                    f"Refresh token reuse detected for family {family_id}. "
-                    f"Revoking entire family."
-                )
-                return False
-            token_record["used"] = True
-            return True
-    
-    return False
+    try:
+        redis = await get_redis()
+        
+        # Check if token exists (hasn't been revoked)
+        token_key = f"{RT_PREFIX}{family_id}:{jti}"
+        if not await redis.exists(token_key):
+            logger.warning(f"Token {jti} in family {family_id} not found - may have been revoked")
+            return False
+        
+        # Get remaining TTL from the token key
+        ttl = await redis.ttl(token_key)
+        if ttl <= 0:
+            ttl = REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600
+        
+        # Mark as used with same TTL (atomic SET NX)
+        used_key = f"{RT_USED_PREFIX}{family_id}:{jti}"
+        result = await redis.set(used_key, "1", ex=ttl, nx=True)
+        
+        if result is None:
+            # Token was already marked as used - replay attack!
+            logger.warning(
+                f"Refresh token reuse detected for family {family_id}. "
+                f"Revoking entire family."
+            )
+            await _revoke_token_family(family_id)
+            return False
+        
+        return True
+    except Exception as e:
+        logger.error(f"Failed to mark token as used in Redis: {e}")
+        return False
 
 
-def _revoke_token_family(family_id: str) -> None:
+async def _revoke_token_family(family_id: str) -> None:
     """Revoke all tokens in a family.
     
-    Called when replay attack is detected.
+    Called when replay attack is detected or user logs out.
     
     Args:
         family_id: The token family to revoke.
     """
-    if family_id in _token_families:
-        del _token_families[family_id]
-    logger.warning(f"Token family {family_id} revoked due to potential replay attack")
+    try:
+        redis = await get_redis()
+        
+        # Find and delete all tokens in the family
+        pattern = f"{RT_PREFIX}{family_id}:*"
+        used_pattern = f"{RT_USED_PREFIX}{family_id}:*"
+        
+        keys = await redis.keys(pattern)
+        used_keys = await redis.keys(used_pattern)
+        
+        all_keys = keys + used_keys
+        if all_keys:
+            await redis.delete(*all_keys)
+        
+        logger.warning(f"Token family {family_id} revoked")
+    except Exception as e:
+        logger.error(f"Failed to revoke token family in Redis: {e}")
 
 
 def decode_token(token: str, token_type: str = "access") -> dict:
@@ -245,9 +273,9 @@ async def refresh_access_token_with_rotation(
         raise InvalidTokenError("Invalid token claims")
     
     # Check for replay attack
-    if not _mark_token_used(family_id, jti):
+    if not await _mark_token_used(family_id, jti):
         # Token was already used - revoke entire family
-        _revoke_token_family(family_id)
+        await _revoke_token_family(family_id)
         raise InvalidTokenError("Refresh token reuse detected. Session revoked for security.")
     
     # Verify user still exists
@@ -258,7 +286,7 @@ async def refresh_access_token_with_rotation(
     
     # Generate new tokens with same family
     new_access_token = create_access_token(user_id, family_id=family_id)
-    new_refresh_token, _ = create_refresh_token(user_id, family_id=family_id)
+    new_refresh_token, _ = await create_refresh_token(user_id, family_id=family_id)
     
     logger.info(f"Token refreshed for user {user_id}, family {family_id}")
     
@@ -276,7 +304,7 @@ async def revoke_token_family(family_id: str) -> None:
     Args:
         family_id: The token family to revoke.
     """
-    _revoke_token_family(family_id)
+    await _revoke_token_family(family_id)
     logger.info(f"Token family {family_id} revoked (logout)")
 
 
@@ -286,91 +314,25 @@ async def revoke_all_user_sessions(user_id: str) -> None:
     Args:
         user_id: The user's ID.
     """
-    # Find and revoke all families for this user
-    families_to_revoke = []
-    for fam_id, family in _token_families.items():
-        if fam_id.startswith(f"fam_{user_id}_"):
-            families_to_revoke.append(fam_id)
-    
-    for fam_id in families_to_revoke:
-        _revoke_token_family(fam_id)
-    
-    logger.info(f"All sessions revoked for user {user_id}")
-
-
-# Redis-based implementation for production
-class RedisTokenStore:
-    """Redis-based token store for production deployments."""
-    
-    def __init__(self, redis_client):
-        """Initialize with Redis client.
+    try:
+        redis = await get_redis()
         
-        Args:
-            redis_client: Redis client instance.
-        """
-        self.redis = redis_client
-    
-    async def store_token_in_family(
-        self,
-        family_id: str,
-        jti: str,
-        token: str,
-        ttl: int = None,
-    ) -> None:
-        """Store token in Redis with TTL.
+        # Find all token families for this user
+        # Pattern: rt:fam_{user_id}_*
+        pattern = f"{RT_PREFIX}fam_{user_id}_*"
+        keys = await redis.keys(pattern)
         
-        Args:
-            family_id: Token family ID.
-            jti: Token unique ID.
-            token: Encoded token.
-            ttl: Time to live in seconds.
-        """
-        key = f"rt:{family_id}:{jti}"
-        ttl = ttl or REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600
-        await self.redis.setex(key, ttl, token)
-    
-    async def is_token_used(self, family_id: str, jti: str) -> bool:
-        """Check if token was already used.
+        # Extract unique family IDs and revoke each
+        family_ids = set()
+        for key in keys:
+            # key format: rt:fam_{user_id}_{random}:{jti}
+            parts = key.split(":")
+            if len(parts) >= 2:
+                family_ids.add(parts[1])
         
-        Args:
-            family_id: Token family ID.
-            jti: Token unique ID.
+        for family_id in family_ids:
+            await _revoke_token_family(family_id)
         
-        Returns:
-            True if token was used, False otherwise.
-        """
-        used_key = f"rt:used:{family_id}:{jti}"
-        return bool(await self.redis.exists(used_key))
-    
-    async def mark_token_used(self, family_id: str, jti: str) -> bool:
-        """Mark token as used, return False if already used.
-        
-        Args:
-            family_id: Token family ID.
-            jti: Token unique ID.
-        
-        Returns:
-            True if successfully marked, False if already used.
-        """
-        used_key = f"rt:used:{family_id}:{jti}"
-        
-        # Only set if doesn't exist (NX)
-        result = await self.redis.set(used_key, "1", nx=True)
-        return result is not None
-    
-    async def revoke_family(self, family_id: str) -> None:
-        """Revoke all tokens in a family.
-        
-        Args:
-            family_id: Token family to revoke.
-        """
-        # Find all tokens in family and delete
-        pattern = f"rt:{family_id}:*"
-        used_pattern = f"rt:used:{family_id}:*"
-        
-        keys = await self.redis.keys(pattern)
-        used_keys = await self.redis.keys(used_pattern)
-        
-        all_keys = keys + used_keys
-        if all_keys:
-            await self.redis.delete(*all_keys)
+        logger.info(f"All sessions revoked for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to revoke all user sessions: {e}")

@@ -4,9 +4,10 @@ Implements failed login attempt tracking and temporary IP blocking
 to prevent credential stuffing and brute force attacks.
 """
 
+import os
 import time
 import logging
-from typing import Callable, Optional
+from typing import Callable, Optional, Set
 from datetime import datetime, timezone, timedelta
 
 from fastapi import Request, Response
@@ -21,6 +22,11 @@ logger = logging.getLogger(__name__)
 MAX_FAILED_ATTEMPTS = int(os.getenv("BRUTE_FORCE_MAX_ATTEMPTS", "5"))
 LOCKOUT_DURATION_SECONDS = int(os.getenv("BRUTE_FORCE_LOCKOUT_SECONDS", "900"))  # 15 minutes
 FAILED_ATTEMPTS_WINDOW_SECONDS = int(os.getenv("BRUTE_FORCE_WINDOW_SECONDS", "300"))  # 5 minutes
+
+# Trusted proxies for X-Forwarded-For header (comma-separated IPs)
+TRUSTED_PROXIES: Set[str] = set(
+    ip.strip() for ip in os.getenv("TRUSTED_PROXIES", "").split(",") if ip.strip()
+)
 
 # Redis key prefixes
 FAILED_ATTEMPTS_PREFIX = "bf:failed:"
@@ -46,8 +52,6 @@ end
 
 return {attempts, 0}
 """
-
-import os
 
 
 class BruteForceMiddleware(BaseHTTPMiddleware):
@@ -99,7 +103,10 @@ class BruteForceMiddleware(BaseHTTPMiddleware):
         return response
     
     def _get_client_ip(self, request: Request) -> str:
-        """Extract client IP from request, handling proxies.
+        """Extract client IP from request, handling trusted proxies.
+        
+        Only trusts X-Forwarded-For header when the request comes from
+        a trusted proxy IP. Otherwise, uses the direct client IP.
         
         Args:
             request: The FastAPI request.
@@ -107,14 +114,17 @@ class BruteForceMiddleware(BaseHTTPMiddleware):
         Returns:
             Client IP address.
         """
-        # Check X-Forwarded-For header (from trusted proxies)
+        # Get the immediate client IP (direct connection or proxy)
+        remote_addr = request.client.host if request.client else "unknown"
+        
+        # Check X-Forwarded-For header only from trusted proxies
         forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
+        if forwarded and remote_addr in TRUSTED_PROXIES:
             # Take the first IP (original client) from the chain
             return forwarded.split(",")[0].strip()
         
-        # Fall back to direct client IP
-        return request.client.host if request.client else "unknown"
+        # Fall back to direct client IP (no trusted proxy or no header)
+        return remote_addr
     
     async def _is_locked_out(self, client_ip: str) -> tuple[bool, int]:
         """Check if an IP is currently locked out.
