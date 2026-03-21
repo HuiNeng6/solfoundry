@@ -7,9 +7,9 @@ Provides endpoints for:
 """
 
 import logging
-from typing import Optional
+import os
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -136,9 +136,6 @@ async def unsubscribe_from_email(
     Uses the token from email to identify the user without authentication.
     This allows one-click unsubscribe from email clients.
     """
-    import os
-    from uuid import UUID
-
     # We need to find the user by verifying the token
     # Since tokens are user-specific, we need to check against all users
     # This is handled by the EmailPreferences verification
