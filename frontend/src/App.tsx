@@ -9,6 +9,9 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { WalletProvider } from './components/wallet/WalletProvider';
 import { SiteLayout } from './components/layout/SiteLayout';
 import { ThemeProvider } from './contexts/ThemeContext';
+import { ToastProvider } from './contexts/ToastContext';
+import { ToastContainer } from './components/common/Toast';
+import { useToast } from './contexts/ToastContext';
 
 // ── Lazy-loaded page components ──────────────────────────────────────────────
 const BountiesPage = lazy(() => import('./pages/BountiesPage'));
@@ -39,6 +42,7 @@ function LoadingSpinner() {
 function AppLayout() {
   const location = useLocation();
   const { publicKey, connect, disconnect } = useWallet();
+  const { toasts, removeToast } = useToast();
   const walletAddress = publicKey?.toBase58() ?? null;
 
   return (
@@ -78,6 +82,9 @@ function AppLayout() {
           <Route path="*" element={<Navigate to="/bounties" replace />} />
         </Routes>
       </Suspense>
+      
+      {/* Global toast notifications */}
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </SiteLayout>
   );
 }
@@ -87,9 +94,11 @@ export default function App() {
   return (
     <BrowserRouter>
       <ThemeProvider defaultTheme="dark">
-        <WalletProvider defaultNetwork="mainnet-beta">
-          <AppLayout />
-        </WalletProvider>
+        <ToastProvider>
+          <WalletProvider defaultNetwork="mainnet-beta">
+            <AppLayout />
+          </WalletProvider>
+        </ToastProvider>
       </ThemeProvider>
     </BrowserRouter>
   );
