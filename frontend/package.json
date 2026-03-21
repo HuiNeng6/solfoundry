@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
@@ -13,6 +14,7 @@
     "@solana/wallet-adapter-wallets": "^0.19.32",
     "@solana/web3.js": "^1.95.0",
     "@tailwindcss/postcss": "^4.2.2",
+    "@tanstack/react-query": "^5.0.0",
     "autoprefixer": "^10.4.27",
     "postcss": "^8.5.8",
     "react": "^18.3.1",

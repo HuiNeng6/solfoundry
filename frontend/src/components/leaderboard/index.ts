@@ -1,2 +1,2 @@
-/** Barrel export for leaderboard feature components. */
-export { LeaderboardPage, default } from './LeaderboardPage';
+export { LeaderboardPage } from './LeaderboardPage';
+export { LeaderboardSkeleton } from './LeaderboardSkeleton';

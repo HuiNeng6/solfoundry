@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryProvider } from './providers/QueryProvider';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import './index.css';
 import App from './App';
 
@@ -9,8 +10,10 @@ if (!root) throw new Error('Root element not found');
 
 createRoot(root).render(
   <StrictMode>
-    <QueryProvider>
-      <App />
-    </QueryProvider>
+    <ErrorBoundary>
+      <QueryProvider>
+        <App />
+      </QueryProvider>
+    </ErrorBoundary>
   </StrictMode>
 );

@@ -1,14 +1,14 @@
 /**
  * useLeaderboard - React Query powered hook for leaderboard data.
  * Fetches from real API with caching, loading states, and error handling.
+ * No mock data fallbacks - UI handles empty/error states.
  * @module hooks/useLeaderboard
  */
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { Contributor, TimeRange, SortField } from '../types/leaderboard';
 import { fetchLeaderboard } from '../api/leaderboard';
-import { MOCK_CONTRIBUTORS } from '../data/mockLeaderboard';
 
 const REPO = 'SolFoundry/solfoundry';
 const GITHUB_API = 'https://api.github.com';
@@ -21,7 +21,7 @@ const KNOWN_PAYOUTS: Record<string, { bounties: number; fndry: number; skills: s
   zhaog100: { bounties: 1, fndry: 150_000, skills: ['Backend', 'Python', 'FastAPI'] },
 };
 
-/** Fetch merged PRs from GitHub to build contributor stats (fallback). */
+/** Fetch merged PRs from GitHub to build contributor stats (secondary data source). */
 async function fetchGitHubContributors(): Promise<Contributor[]> {
   const url = `${GITHUB_API}/repos/${REPO}/pulls?state=closed&per_page=100&sort=updated&direction=desc`;
   const res = await fetch(url);
@@ -95,7 +95,7 @@ export function useLeaderboard() {
   });
 
   // Fallback to GitHub API + known payouts if API returns empty
-  const { data: githubContributors = [] } = useQuery({
+  const { data: githubContributors = [], isLoading: githubLoading } = useQuery({
     queryKey: ['leaderboard', 'github'],
     queryFn: fetchGitHubContributors,
     staleTime: 5 * 60 * 1000,
@@ -103,11 +103,11 @@ export function useLeaderboard() {
     enabled: apiContributors.length === 0 && !loading,
   });
 
-  // Use API data, fallback to GitHub, then mock
+  // Use API data first, then GitHub data - no mock fallback
   const baseContributors = useMemo(() => {
     if (apiContributors.length > 0) return apiContributors;
     if (githubContributors.length > 0) return githubContributors;
-    return MOCK_CONTRIBUTORS;
+    return [];
   }, [apiContributors, githubContributors]);
 
   // Sort and filter contributors
@@ -124,8 +124,9 @@ export function useLeaderboard() {
 
   return {
     contributors: sorted,
-    loading,
+    loading: loading || githubLoading,
     error: error as Error | null,
+    isEmpty: sorted.length === 0 && !loading,
     timeRange,
     setTimeRange,
     sortBy,
