@@ -13,3 +13,4 @@ export type { ToastProps } from './Toast';
 export { ToastContainer } from './ToastContainer';
 export { TierProgressBar } from './TierProgressBar';
 export type { TierProgressBarProps } from './TierProgressBar';
+export { ErrorBoundary, useErrorBoundary } from './ErrorBoundary';

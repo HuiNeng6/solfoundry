@@ -1,11 +1,14 @@
 /**
- * useLeaderboard - Data-fetching hook for the contributor leaderboard.
- * Tries GET /api/leaderboard, falls back to GitHub API for merged PRs,
- * merges with known Phase 1 payout data.
+ * useLeaderboard - React Query powered hook for leaderboard data.
+ * Fetches from real API with caching, loading states, and error handling.
  * @module hooks/useLeaderboard
  */
-import { useState, useEffect, useMemo } from 'react';
+
+import { useState, useMemo, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import type { Contributor, TimeRange, SortField } from '../types/leaderboard';
+import { fetchLeaderboard } from '../api/leaderboard';
+import { MOCK_CONTRIBUTORS } from '../data/mockLeaderboard';
 
 const REPO = 'SolFoundry/solfoundry';
 const GITHUB_API = 'https://api.github.com';
@@ -18,7 +21,7 @@ const KNOWN_PAYOUTS: Record<string, { bounties: number; fndry: number; skills: s
   zhaog100: { bounties: 1, fndry: 150_000, skills: ['Backend', 'Python', 'FastAPI'] },
 };
 
-/** Fetch merged PRs from GitHub to build contributor stats. */
+/** Fetch merged PRs from GitHub to build contributor stats (fallback). */
 async function fetchGitHubContributors(): Promise<Contributor[]> {
   const url = `${GITHUB_API}/repos/${REPO}/pulls?state=closed&per_page=100&sort=updated&direction=desc`;
   const res = await fetch(url);
@@ -74,48 +77,42 @@ async function fetchGitHubContributors(): Promise<Contributor[]> {
 }
 
 export function useLeaderboard() {
-  const [contributors, setContributors] = useState<Contributor[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [timeRange, setTimeRange] = useState<TimeRange>('all');
   const [sortBy, setSortBy] = useState<SortField>('points');
   const [search, setSearch] = useState('');
 
-  useEffect(() => {
-    let c = false;
-    (async () => {
-      try {
-        // Try backend API first
-        const r = await fetch(`/api/leaderboard?range=${timeRange}`);
-        if (!c && r.ok) {
-          const data = await r.json();
-          if (Array.isArray(data) && data.length > 0) {
-            setContributors(data);
-            setLoading(false);
-            return;
-          }
-        }
-      } catch {
-        // Backend unavailable — fall through to GitHub
-      }
+  // Main leaderboard query with React Query
+  const {
+    data: apiContributors = [],
+    isLoading: loading,
+    error,
+    refetch,
+  } = useQuery({
+    queryKey: ['leaderboard', timeRange],
+    queryFn: () => fetchLeaderboard(timeRange),
+    staleTime: 60 * 1000,
+    retry: 2,
+  });
 
-      try {
-        // Fallback: build from GitHub API + known payouts
-        const contribs = await fetchGitHubContributors();
-        if (!c && contribs.length > 0) {
-          setContributors(contribs);
-        }
-      } catch (e) {
-        if (!c) setError(e instanceof Error ? e.message : 'Failed');
-      } finally {
-        if (!c) setLoading(false);
-      }
-    })();
-    return () => { c = true; };
-  }, [timeRange]);
+  // Fallback to GitHub API + known payouts if API returns empty
+  const { data: githubContributors = [] } = useQuery({
+    queryKey: ['leaderboard', 'github'],
+    queryFn: fetchGitHubContributors,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+    enabled: apiContributors.length === 0 && !loading,
+  });
 
+  // Use API data, fallback to GitHub, then mock
+  const baseContributors = useMemo(() => {
+    if (apiContributors.length > 0) return apiContributors;
+    if (githubContributors.length > 0) return githubContributors;
+    return MOCK_CONTRIBUTORS;
+  }, [apiContributors, githubContributors]);
+
+  // Sort and filter contributors
   const sorted = useMemo(() => {
-    let list = [...contributors];
+    let list = [...baseContributors];
     if (search) list = list.filter(c => c.username.toLowerCase().includes(search.toLowerCase()));
     list.sort((a, b) => {
       const aValue = sortBy === 'bounties' ? a.bountiesCompleted : sortBy === 'earnings' ? a.earningsFndry : a.points;
@@ -123,7 +120,18 @@ export function useLeaderboard() {
       return bValue - aValue;
     });
     return list.map((c, i) => ({ ...c, rank: i + 1 }));
-  }, [contributors, sortBy, search]);
+  }, [baseContributors, sortBy, search]);
 
-  return { contributors: sorted, loading, error, timeRange, setTimeRange, sortBy, setSortBy, search, setSearch };
+  return {
+    contributors: sorted,
+    loading,
+    error: error as Error | null,
+    timeRange,
+    setTimeRange,
+    sortBy,
+    setSortBy,
+    search,
+    setSearch,
+    refetch,
+  };
 }
