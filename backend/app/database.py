@@ -7,14 +7,40 @@ automatically by the session context manager.
 
 import os
 import logging
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Any
 from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy import String, TypeDecorator
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+# GUID type for cross-database UUID support
+class GUID(TypeDecorator):
+    """Platform-independent GUID type that stores UUID as CHAR(36) or native UUID.
+    
+    Uses CHAR(36) for SQLite compatibility, native UUID for PostgreSQL.
+    """
+    impl = String(36)
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect: Any) -> Any:
+        if dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import UUID
+            return dialect.type_descriptor(UUID())
+        else:
+            return dialect.type_descriptor(String(36))
+
+    def process_bind_param(self, value: Any, dialect: Any) -> Any:
+        if value is None:
+            return value
+        elif dialect.name == "postgresql":
+            return str(value)
+        else:
+            return str(value)
 
 # Database URL from environment
 DATABASE_URL = os.getenv(
