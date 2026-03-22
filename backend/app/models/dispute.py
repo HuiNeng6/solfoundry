@@ -27,9 +27,10 @@ from sqlalchemy import (
     Text,
     ForeignKey,
     Index,
+    UUID,
 )
 
-from app.database import Base, GUID
+from app.database import Base
 
 
 class DisputeStatus(str, Enum):
@@ -120,15 +121,15 @@ class DisputeDB(Base):
 
     __tablename__ = "disputes"
 
-    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     bounty_id = Column(
-        GUID(),
+        UUID(as_uuid=True),
         ForeignKey("bounties.id", ondelete="CASCADE"),
         nullable=False,
     )
-    submission_id = Column(GUID(), nullable=False)
-    contributor_id = Column(GUID(), nullable=False)
-    creator_id = Column(GUID(), nullable=False)
+    submission_id = Column(UUID(as_uuid=True), nullable=False)
+    contributor_id = Column(UUID(as_uuid=True), nullable=False)
+    creator_id = Column(UUID(as_uuid=True), nullable=False)
     reason = Column(String(50), nullable=False)
     description = Column(Text, nullable=False)
     evidence_links = Column(JSON, default=list, nullable=False)
@@ -140,7 +141,7 @@ class DisputeDB(Base):
     outcome = Column(String(30), nullable=True)
     ai_review_score = Column(Float, nullable=True)
     ai_recommendation = Column(Text, nullable=True)
-    resolver_id = Column(GUID(), nullable=True)
+    resolver_id = Column(UUID(as_uuid=True), nullable=True)
     resolution_notes = Column(Text, nullable=True)
     reputation_impact_creator = Column(Float, nullable=True, default=0.0)
     reputation_impact_contributor = Column(Float, nullable=True, default=0.0)
@@ -173,16 +174,16 @@ class DisputeHistoryDB(Base):
 
     __tablename__ = "dispute_history"
 
-    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     dispute_id = Column(
-        GUID(),
+        UUID(as_uuid=True),
         ForeignKey("disputes.id", ondelete="CASCADE"),
         nullable=False,
     )
     action = Column(String(50), nullable=False)
     previous_status = Column(String(20), nullable=True)
     new_status = Column(String(20), nullable=True)
-    actor_id = Column(GUID(), nullable=False)
+    actor_id = Column(UUID(as_uuid=True), nullable=False)
     notes = Column(Text, nullable=True)
     created_at = Column(
         DateTime(timezone=True),
