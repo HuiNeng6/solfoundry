@@ -1,8 +1,8 @@
 /**
  * MarkdownRenderer — Reusable component for rendering Markdown content safely.
  *
- * Uses react-markdown for parsing and react-syntax-highlighter for code blocks.
- * CommonMark only — GFM pipe tables are not parsed as HTML tables (no extra remark plugins).
+ * Uses react-markdown for parsing, react-syntax-highlighter for code blocks, and remark-gfm for GitHub-flavored Markdown.
+ * Supports GFM features: tables, task lists, strikethrough, autolinks.
  * All links open in a new tab with rel="noopener noreferrer" for security.
  * HTML output is XSS-safe: react-markdown does not use dangerouslySetInnerHTML.
  *
@@ -10,6 +10,7 @@
  */
 import { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import type { Components } from 'react-markdown';
@@ -70,6 +71,35 @@ function makeMarkdownComponents(resolved: ResolvedTheme): Components {
       );
     },
 
+    img({ src, alt, ...props }) {
+      return (
+        <img
+          src={src}
+          alt={alt || ''}
+          loading="lazy"
+          className="max-w-full h-auto rounded-lg my-4 border border-gray-200 dark:border-white/10"
+          {...props}
+        />
+      );
+    },
+
+    // GFM task list items - input checkboxes
+    input({ type, checked, disabled, ...props }) {
+      if (type === 'checkbox') {
+        return (
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={disabled || true}
+            readOnly
+            className="mr-2 h-4 w-4 rounded border-gray-300 text-solana-purple focus:ring-solana-purple cursor-not-allowed"
+            {...props}
+          />
+        );
+      }
+      return <input type={type} {...props} />;
+    },
+
     h1: ({ children }) => (
       <h1 className="text-2xl font-bold text-gray-900 dark:text-white mt-6 mb-3">{children}</h1>
     ),
@@ -113,6 +143,11 @@ function makeMarkdownComponents(resolved: ResolvedTheme): Components {
       <strong className="font-semibold text-gray-900 dark:text-white">{children}</strong>
     ),
     em: ({ children }) => <em className="italic text-gray-700 dark:text-gray-300">{children}</em>,
+
+    // GFM strikethrough
+    del: ({ children }) => (
+      <del className="line-through text-gray-500 dark:text-gray-500">{children}</del>
+    ),
   };
 }
 
@@ -132,10 +167,11 @@ export function MarkdownRenderer({ content, className }: MarkdownRendererProps) 
         `[&_ul]:list-disc [&_ul]:list-outside [&_ul]:ml-6 [&_ul]:space-y-1 [&_ul]:mb-3 ` +
         `[&_ol]:list-decimal [&_ol]:list-outside [&_ol]:ml-6 [&_ol]:space-y-1 [&_ol]:mb-3 ` +
         `[&_li]:leading-relaxed [&_ul]:text-gray-700 [&_ul]:dark:text-gray-300 ` +
-        `[&_ol]:text-gray-700 [&_ol]:dark:text-gray-300 ${className ?? ''}`
+        `[&_ol]:text-gray-700 [&_ol]:dark:text-gray-300 [&_li]:flex [&_li]:items-start ` +
+        `${className ?? ''}`
       }
     >
-      <ReactMarkdown components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {content}
       </ReactMarkdown>
     </div>
