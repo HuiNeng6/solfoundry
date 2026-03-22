@@ -37,7 +37,6 @@ const NAV_LINKS: NavLink[] = [
   { label: 'Docs', href: 'https://github.com/SolFoundry/solfoundry#readme', external: true },
 ];
 
-
 // ============================================================================
 // Components
 // ============================================================================
