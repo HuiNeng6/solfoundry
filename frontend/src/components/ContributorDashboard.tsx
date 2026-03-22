@@ -3,6 +3,7 @@
 import React, { useState, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '../services/apiClient';
+import { CopyAddress } from './common';
 
 // ============================================================================
 // Types
@@ -579,9 +580,12 @@ function SettingsSection({
           <h4 className="text-sm text-gray-400 mb-3">Wallet</h4>
           <div className="py-2 px-3 bg-[#0a0a0a] rounded-lg">
             <p className="text-xs text-gray-400">Connected Wallet</p>
-            <p className="text-sm text-[#14F195] font-mono mt-1">
-              {walletAddress.slice(0, 8)}...{walletAddress.slice(-8)}
-            </p>
+            <CopyAddress
+              address={walletAddress}
+              label="Wallet"
+              size="sm"
+              className="mt-1"
+            />
           </div>
         </div>
       )}

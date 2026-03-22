@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { EscrowStatus } from './wallet/EscrowStatus';
 import { MarkdownRenderer } from './common/MarkdownRenderer';
+import { CopyAddress } from './common';
 import { useBountySubmission } from '../hooks/useBountySubmission';
 import ReviewScoresPanel from './bounties/ReviewScoresPanel';
 import SubmissionForm from './bounties/SubmissionForm';
@@ -181,17 +182,31 @@ export const BountyDetailPage: React.FC<{ bounty: BountyDetail }> = ({ bounty })
                 <div className="mt-4 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
                   <div className="flex items-center gap-2 text-emerald-400 text-sm font-medium">
                     <span className="text-lg">🏆</span>
-                    Winner: <code className="font-mono">{bounty.winner_wallet.slice(0, 12)}...</code>
+                    <span>Winner:</span>
+                    <CopyAddress
+                      address={bounty.winner_wallet}
+                      label="Wallet"
+                      size="xs"
+                    />
                   </div>
                   {bounty.payout_tx_hash && (
-                    <a
-                      href={`https://solscan.io/tx/${bounty.payout_tx_hash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs text-blue-400 hover:text-blue-300 mt-1 inline-block"
-                    >
-                      View payout tx on Solscan
-                    </a>
+                    <div className="mt-2 flex items-center gap-2">
+                      <CopyAddress
+                        address={bounty.payout_tx_hash}
+                        label="Transaction"
+                        startChars={8}
+                        endChars={8}
+                        size="xs"
+                      />
+                      <a
+                        href={`https://solscan.io/tx/${bounty.payout_tx_hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-400 hover:text-blue-300"
+                      >
+                        View on Solscan
+                      </a>
+                    </div>
                   )}
                 </div>
               )}
